@@ -1,0 +1,52 @@
+# Environment — never commit credentials
+.env
+.env.*
+!.env.example
+
+# Data files — client XML/ZIP files, can be large and sensitive
+data/
+
+# Generated reports — contain live client data
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / frontend (when built)
+node_modules/
+frontend/dist/
+frontend/.env
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Alembic — don't commit auto-generated migration files without review
+# database/migrations/versions/  ← uncomment if you want to exclude
+
+# Logs
+*.log

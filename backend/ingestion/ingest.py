@@ -1,0 +1,270 @@
+"""
+Ingestion runner — processes all XML files for one or all accounts.
+
+Usage:
+    py -m backend.ingestion.ingest --account=BAT
+    py -m backend.ingestion.ingest --all
+
+For each file:
+  1. Check if already in files table (skip duplicates)
+  2. Parse filename + XML
+  3. Upsert records into correct table
+  4. Log result in files table
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import sys
+from pathlib import Path
+
+# psycopg requires SelectorEventLoop on Windows (not the default ProactorEventLoop)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from backend.db.session import get_session
+from backend.db.upsert import (
+    delete_annullamento,
+    log_correction,
+    log_file,
+    upsert_curve_records,
+    upsert_totalizer_records,
+)
+from backend.ingestion.file_walker import walk_account, walk_root
+from backend.parser.router import route_file
+
+logger = logging.getLogger(__name__)
+
+DATA_ROOT = Path(__file__).parent.parent.parent / "data"
+
+# Account → PostgreSQL schema name mapping
+# Space/special chars in account names are normalised to underscores
+ACCOUNT_SCHEMA_MAP: dict[str, str] = {
+    "BAT": "bat",
+    "CH4": "ch4",
+    "Dinamo Trade": "dinamo_trade",
+    "Egogreen": "egogreen",
+    "Energetica": "energetica",
+    "Energit": "energit",
+    "Enjoy Energy": "enjoy_energy",
+    "Onda Più": "onda_piu",
+    "Power.it": "power_it",
+    "Royal Group": "royal_group",
+    "SOS": "sos",
+    "TOP ENERGY": "top_energy",
+}
+
+
+def schema_for(account_id: str) -> str:
+    if account_id in ACCOUNT_SCHEMA_MAP:
+        return ACCOUNT_SCHEMA_MAP[account_id]
+    # Fallback: normalise name
+    return account_id.lower().replace(" ", "_").replace(".", "_").replace("à", "a")
+
+
+async def already_processed(session, file_name: str) -> bool:
+    """Return True if the file was previously processed with status=ok."""
+    from sqlalchemy import select, text
+    result = await session.execute(
+        text("SELECT status FROM files WHERE file_name = :fn"),
+        {"fn": file_name},
+    )
+    row = result.fetchone()
+    return row is not None and row[0] == "ok"
+
+
+async def process_file(account_id: str, file_path: Path, schema: str) -> None:
+    """Parse and ingest one XML file, logging result in files table."""
+    file_name = file_path.name
+
+    async with get_session(schema) as session:
+        # Skip already-processed files
+        if await already_processed(session, file_name):
+            logger.debug("Skip (already processed): %s", file_name)
+            return
+
+        try:
+            result = route_file(file_path)
+            meta = result.filename_meta
+
+            if result.shape == "f2g":
+                # F2G parser not yet implemented — log as skipped
+                await log_file(
+                    session,
+                    file_name=file_name,
+                    account_id=account_id,
+                    cod_flusso=meta.cod_flusso,
+                    piva_distributore=meta.piva_distributore,
+                    piva_utente=meta.piva_utente,
+                    mese_anno=meta.mese_anno,
+                    file_timestamp=meta.file_timestamp,
+                    progressivo=meta.progressivo,
+                    sm_status=meta.sm_status,
+                    status="skipped",
+                    error_message="F2G parser not yet implemented",
+                )
+                return
+
+            # Upsert curve records
+            if result.curve_records:
+                tipo_dato = result.curve_records[0].tipo_dato if result.curve_records else None
+                inserted, skipped = await upsert_curve_records(
+                    session,
+                    result.curve_records,
+                    account_id=account_id,
+                    cod_flusso=meta.cod_flusso,
+                    mese_anno=meta.mese_anno,
+                    file_timestamp=meta.file_timestamp,
+                    progressivo=meta.progressivo,
+                    source_file=file_name,
+                    tipo_dato=tipo_dato,
+                )
+                logger.info(
+                    "%s | curves: +%d skipped:%d", file_name, inserted, skipped
+                )
+
+            # Upsert totalizer records
+            if result.totalizer_records:
+                count = await upsert_totalizer_records(
+                    session,
+                    result.totalizer_records,
+                    account_id=account_id,
+                    cod_flusso=meta.cod_flusso,
+                    file_timestamp=meta.file_timestamp,
+                    progressivo=meta.progressivo,
+                    source_file=file_name,
+                )
+                logger.info("%s | totals: +%d", file_name, count)
+
+            # Handle Flusso 2 annullamento (delete)
+            if result.annullamento_pods:
+                deleted = await delete_annullamento(
+                    session,
+                    account_id=account_id,
+                    pods=result.annullamento_pods,
+                    mese_anno=meta.mese_anno,
+                )
+                logger.info(
+                    "%s | annullamento: deleted %d records for PODs %s",
+                    file_name, deleted, result.annullamento_pods,
+                )
+
+            # Log Flusso 2 corrections to audit table
+            if result.shape == "flusso2":
+                for rec in result.curve_records:
+                    await log_correction(
+                        session,
+                        account_id=account_id,
+                        pod=rec.pod,
+                        mese_anno=meta.mese_anno,
+                        tipo_rettifica=None,
+                        motivazione=None,
+                        data_rilevazione=None,
+                        cod_flusso=meta.cod_flusso,
+                        source_file=file_name,
+                    )
+
+            await log_file(
+                session,
+                file_name=file_name,
+                account_id=account_id,
+                cod_flusso=meta.cod_flusso,
+                piva_distributore=meta.piva_distributore,
+                piva_utente=meta.piva_utente,
+                mese_anno=meta.mese_anno,
+                file_timestamp=meta.file_timestamp,
+                progressivo=meta.progressivo,
+                sm_status=meta.sm_status,
+                status="ok",
+            )
+
+        except Exception as exc:
+            logger.error("ERROR %s: %s", file_name, exc)
+            try:
+                # Attempt to parse filename for the log even on error
+                from backend.parser.filename_parser import parse_filename
+                try:
+                    m = parse_filename(file_name)
+                    fmeta = dict(
+                        cod_flusso=m.cod_flusso,
+                        piva_distributore=m.piva_distributore,
+                        piva_utente=m.piva_utente,
+                        mese_anno=m.mese_anno,
+                        file_timestamp=m.file_timestamp,
+                        progressivo=m.progressivo,
+                        sm_status=m.sm_status,
+                    )
+                except Exception:
+                    fmeta = dict(
+                        cod_flusso=None, piva_distributore=None, piva_utente=None,
+                        mese_anno=None, file_timestamp=None, progressivo=None, sm_status=None,
+                    )
+
+                async with get_session(schema) as err_session:
+                    await log_file(
+                        err_session,
+                        file_name=file_name,
+                        account_id=account_id,
+                        status="error",
+                        error_message=str(exc),
+                        **fmeta,
+                    )
+            except Exception as log_exc:
+                logger.error("Failed to log error for %s: %s", file_name, log_exc)
+
+
+async def ingest_account(account_id: str) -> None:
+    schema = schema_for(account_id)
+    account_root = DATA_ROOT / account_id
+    entries = walk_account(account_root, account_id)
+
+    logger.info(
+        "Ingesting %s (%s) — %d files found", account_id, schema, len(entries)
+    )
+
+    ok = error = skipped = 0
+    for i, entry in enumerate(entries, 1):
+        if i % 500 == 0:
+            logger.info("  Progress: %d / %d", i, len(entries))
+        try:
+            await process_file(account_id, entry.file_path, schema)
+            ok += 1
+        except Exception as exc:
+            logger.error("Unhandled error on %s: %s", entry.file_name, exc)
+            error += 1
+
+    logger.info(
+        "Done %s — ok:%d errors:%d", account_id, ok, error
+    )
+
+
+async def ingest_all() -> None:
+    for account_dir in sorted(DATA_ROOT.iterdir()):
+        if account_dir.is_dir() and not account_dir.name.startswith("#"):
+            await ingest_account(account_dir.name)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="SII ingestion runner")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--account", help="Account name, e.g. BAT")
+    group.add_argument("--all", action="store_true", help="Ingest all accounts")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    if args.all:
+        asyncio.run(ingest_all())
+    else:
+        asyncio.run(ingest_account(args.account))
+
+
+if __name__ == "__main__":
+    main()
