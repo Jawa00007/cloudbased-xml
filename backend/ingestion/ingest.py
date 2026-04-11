@@ -32,6 +32,7 @@ from backend.db.upsert import (
     log_correction,
     log_file,
     upsert_curve_records,
+    upsert_pod_metadata,
     upsert_totalizer_records,
 )
 from backend.ingestion.file_walker import walk_account, walk_root
@@ -92,7 +93,12 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
             meta = result.filename_meta
 
             if result.shape == "f2g":
-                # F2G parser not yet implemented — log as skipped
+                count = await upsert_pod_metadata(
+                    session,
+                    result.f2g_records,
+                    account_id=account_id,
+                )
+                logger.info("%s | pod_metadata: +%d", file_name, count)
                 await log_file(
                     session,
                     file_name=file_name,
@@ -104,8 +110,7 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                     file_timestamp=meta.file_timestamp,
                     progressivo=meta.progressivo,
                     sm_status=meta.sm_status,
-                    status="skipped",
-                    error_message="F2G parser not yet implemented",
+                    status="ok",
                 )
                 return
 

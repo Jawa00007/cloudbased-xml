@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FlussoMisure CodFlusso="F2G">
+  <IdentificativiFlusso>
+    <PIvaUtente>04393470879</PIvaUtente>
+    <PIvaDistributore>05779711000</PIvaDistributore>
+    <CodContrDisp>DP2311</CodContrDisp>
+  </IdentificativiFlusso>
+  <DatiPod>
+    <Pod>IT001E95381966</Pod>
+    <DataInizio>01/09/2021</DataInizio>
+    <DatiPdp>
+      <Trattamento>O</Trattamento>
+      <Tensione>220</Tensione>
+    </DatiPdp>
+  </DatiPod>
+  <DatiPod>
+    <Pod>IT001E94653083</Pod>
+    <DataInizio>01/01/2022</DataInizio>
+    <DatiPdp>
+      <Trattamento>F</Trattamento>
+      <Tensione>380</Tensione>
+    </DatiPdp>
+  </DatiPod>
+</FlussoMisure>

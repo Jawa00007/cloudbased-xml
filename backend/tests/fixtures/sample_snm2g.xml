@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FlussoMisure CodFlusso="SNM2G">
+  <IdentificativiFlusso>
+    <PIvaDistributore>05779711000</PIvaDistributore>
+    <PIvaUtente>04393470879</PIvaUtente>
+    <MeseAnno>01/2025</MeseAnno>
+  </IdentificativiFlusso>
+  <DatiPod>
+    <Pod>IT001E11222047</Pod>
+    <DataMisura>31/12/2024</DataMisura>
+    <DataPrest>01/01/2025</DataPrest>
+    <DatiPdp>
+      <Trattamento>F</Trattamento>
+      <Tensione>400</Tensione>
+    </DatiPdp>
+    <Misura>
+      <TipoDato>E</TipoDato>
+      <Raccolta>S</Raccolta>
+      <Validato>S</Validato>
+      <EaF1>30,000</EaF1>
+      <EaF2>15,000</EaF2>
+      <EaF3>24,998</EaF3>
+      <ErF1>0,785</ErF1>
+      <PotF1>200,000</PotF1>
+    </Misura>
+  </DatiPod>
+</FlussoMisure>

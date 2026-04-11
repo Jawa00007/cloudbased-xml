@@ -1,23 +1,26 @@
 """
-Alembic env.py — multi-schema aware.
+Alembic env.py — multi-schema aware, synchronous engine.
 
-Migrations run once per account schema. The list of schemas comes from
-public.accounts. For a fresh DB, pass --schema=<name> to target one schema.
+Uses psycopg in sync mode (no asyncio) to avoid the Windows
+ProactorEventLoop incompatibility with psycopg 3.
 
-Run:
-    alembic upgrade head                      # all schemas (reads public.accounts)
-    alembic -x schema=bat upgrade head        # single schema
+Run commands:
+    # Generate initial migration (auto-detect from ORM models):
+    alembic -x schema=bat revision --autogenerate -m "initial_schema"
+
+    # Apply to one schema:
+    alembic -x schema=bat upgrade head
+
+    # Apply to all active schemas (reads public.accounts):
+    alembic upgrade head
 """
 
-import asyncio
 import os
 import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool, text
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy import create_engine, pool, text
 
 # Make project root importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -32,16 +35,22 @@ import backend.models.files          # noqa: F401
 import backend.models.measurements   # noqa: F401
 import backend.models.pod_metadata   # noqa: F401
 
-config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+alembic_config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if alembic_config.config_file_name is not None:
+    fileConfig(alembic_config.config_file_name)
+
+# Build a synchronous URL from the async DATABASE_URL.
+# postgresql+psycopg:// works in sync mode — no driver swap needed.
+sync_url = settings.DATABASE_URL.replace("+asyncpg", "+psycopg").replace(
+    "postgresql+psycopg://", "postgresql+psycopg://"
+)
+alembic_config.set_main_option("sqlalchemy.url", sync_url)
+
+target_metadata = Base.metadata
 
 # Tables that live in public schema only — excluded from per-account migrations
 PUBLIC_TABLES = {"accounts"}
-
-target_metadata = Base.metadata
 
 
 def get_target_schema() -> str | None:
@@ -49,8 +58,31 @@ def get_target_schema() -> str | None:
     return context.get_x_argument(as_dictionary=True).get("schema")
 
 
+def do_run_migrations(connection, schema: str) -> None:
+    """Run Alembic migrations scoped to one account schema."""
+    connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+    connection.execute(text(f"SET search_path TO {schema}, public"))
+    connection.commit()
+
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # Per-schema version table so each schema tracks its own migration state
+        version_table=f"alembic_version_{schema}",
+        include_schemas=False,
+        include_object=lambda obj, name, type_, reflected, compare_to: (
+            name not in PUBLIC_TABLES if type_ == "table" else True
+        ),
+        compare_type=True,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    """Generate SQL script without a live DB connection."""
+    url = alembic_config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -62,51 +94,25 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def do_run_migrations(connection: Connection, schema: str) -> None:
-    """Run migrations scoped to a single account schema."""
-    connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-    connection.execute(text(f"SET search_path TO {schema}, public"))
-    connection.commit()
-
-    context.configure(
-        connection=connection,
-        target_metadata=target_metadata,
-        version_table=f"alembic_version_{schema}",
-        include_schemas=False,
-        include_object=lambda obj, name, type_, reflected, compare_to: (
-            name not in PUBLIC_TABLES if type_ == "table" else True
-        ),
-    )
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-async def run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+def run_migrations_online() -> None:
+    """Apply migrations using a live DB connection (sync engine)."""
+    connectable = create_engine(
+        alembic_config.get_main_option("sqlalchemy.url"),
         poolclass=pool.NullPool,
     )
 
     schema = get_target_schema()
 
-    async with connectable.connect() as connection:
+    with connectable.connect() as connection:
         if schema:
-            await connection.run_sync(do_run_migrations, schema)
+            do_run_migrations(connection, schema)
         else:
-            # Run for all active schemas in public.accounts
-            rows = await connection.execute(
+            # Apply to all active schemas in public.accounts
+            rows = connection.execute(
                 text("SELECT schema_name FROM public.accounts WHERE active = true")
             )
-            schemas = [r[0] for r in rows]
-            for s in schemas:
-                await connection.run_sync(do_run_migrations, s)
-
-    await connectable.dispose()
-
-
-def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+            for (s,) in rows:
+                do_run_migrations(connection, s)
 
 
 if context.is_offline_mode():

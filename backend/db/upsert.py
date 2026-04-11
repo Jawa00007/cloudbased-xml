@@ -24,7 +24,9 @@ from backend.models.measurements import (
     MeasurementSecondary,
     MeasurementTotalizer,
 )
+from backend.models.pod_metadata import PodMetadata
 from backend.parser.curve_parser import CurveRecord
+from backend.parser.f2g_parser import F2GRecord
 from backend.parser.totalizer_parser import TotalizerRecord
 
 
@@ -235,6 +237,57 @@ async def log_correction(
         cod_flusso=cod_flusso,
         source_file=source_file,
     ))
+
+
+# ── Pod metadata (F2G) ────────────────────────────────────────────────────────
+
+async def upsert_pod_metadata(
+    session: AsyncSession,
+    records: list[F2GRecord],
+    account_id: str,
+) -> int:
+    """
+    Upsert F2G dispatching-point records into pod_metadata.
+
+    Conflict key: (account_id, pod, valid_from).
+    On conflict, always update — newer F2G file is authoritative.
+    """
+    if not records:
+        return 0
+
+    table = PodMetadata.__table__
+
+    rows = [
+        {
+            "account_id": account_id,
+            "pod": r.pod,
+            "codice_dp": r.codice_dp,
+            "tensione": r.tensione,
+            "trattamento": r.trattamento,
+            "valid_from": r.valid_from,
+            "valid_to": r.valid_to,
+            "source_file": r.source_file,
+        }
+        for r in records
+    ]
+
+    stmt = (
+        insert(table)
+        .values(rows)
+        .on_conflict_do_update(
+            constraint="uq_pod_metadata_key",
+            set_={
+                "codice_dp": insert(table).excluded.codice_dp,
+                "tensione": insert(table).excluded.tensione,
+                "trattamento": insert(table).excluded.trattamento,
+                "valid_to": insert(table).excluded.valid_to,
+                "source_file": insert(table).excluded.source_file,
+            },
+        )
+    )
+
+    result = await session.execute(stmt)
+    return result.rowcount
 
 
 # ── File log ───────────────────────────────────────────────────────────────────

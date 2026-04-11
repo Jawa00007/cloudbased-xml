@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .curve_parser import CurveRecord, parse_curve_file
+from .f2g_parser import F2GRecord, parse_f2g_file
 from .filename_parser import FilenameMetadata, parse_filename
 from .shape_detector import DataShape, detect_shape, is_vno2g_dual
 from .totalizer_parser import TotalizerRecord, parse_totalizer_file
@@ -28,15 +29,14 @@ class ParseResult:
     """
     Output of routing and parsing one SII XML file.
 
-    Exactly one of curve_records / totalizer_records will be populated
-    per shape — except VNO2G which populates both.
-    F2G files set shape="f2g" and leave both record lists empty
-    (F2G parsing is handled separately via parse_f2g).
+    Exactly one of curve_records / totalizer_records / f2g_records will be
+    populated per shape — except VNO2G which populates both curve and totalizer.
     """
     filename_meta: FilenameMetadata
     shape: DataShape
     curve_records: list[CurveRecord] = field(default_factory=list)
     totalizer_records: list[TotalizerRecord] = field(default_factory=list)
+    f2g_records: list[F2GRecord] = field(default_factory=list)
     # Flusso 2: annullamento PODs that must be DELETED (not upserted)
     annullamento_pods: list[str] = field(default_factory=list)
 
@@ -74,8 +74,7 @@ def route_file(file_path: Path) -> ParseResult:
     result = ParseResult(filename_meta=filename_meta, shape=shape)
 
     if shape == "f2g":
-        # F2G has a different tag structure — handled by a dedicated parser
-        # (not implemented here; ingestion pipeline checks shape and calls it)
+        result.f2g_records = parse_f2g_file(root, source_file)
         return result
 
     if shape == "curve" or shape == "flusso2":
