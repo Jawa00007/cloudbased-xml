@@ -2,123 +2,160 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { fetchPods, fetchMonthlySummary } from '../api/client'
+import { fetchPods, fetchMonthlySummary, fetchPodMetadata } from '../api/client'
+import StatusBadge from '../components/StatusBadge'
 
 function currentMeseAnno() {
-  const now = new Date()
-  const mm = String(now.getMonth() + 1).padStart(2, '0')
-  return `${mm}/${now.getFullYear()}`
+  const d = new Date()
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`
 }
 
 export default function AccountPage() {
   const { accountId } = useParams<{ accountId: string }>()
   const account = accountId!
   const [meseAnno, setMeseAnno] = useState(currentMeseAnno)
+  const [tab, setTab] = useState<'pods' | 'metadata'>('pods')
 
-  const pods = useQuery({
-    queryKey: ['pods', account],
-    queryFn: () => fetchPods(account),
-  })
-
-  const summary = useQuery({
+  const pods     = useQuery({ queryKey: ['pods', account], queryFn: () => fetchPods(account) })
+  const metadata = useQuery({ queryKey: ['pod_metadata', account], queryFn: () => fetchPodMetadata(account), enabled: tab === 'metadata' })
+  const summary  = useQuery({
     queryKey: ['summary', account, meseAnno],
     queryFn: () => fetchMonthlySummary(account, meseAnno),
     enabled: !!meseAnno,
   })
 
-  // convert MM/YYYY to input[type=month] value YYYY-MM
   const toInputMonth = (m: string) => `${m.slice(3)}-${m.slice(0, 2)}`
-  const fromInputMonth = (v: string) => `${v.slice(5)}-${v.slice(0, 4)}`  // MM/YYYY
-
-  const handleMonthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const [yyyy, mm] = e.target.value.split('-')
-    setMeseAnno(`${mm}/${yyyy}`)
+  const handleMonth = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const [y, m] = e.target.value.split('-')
+    setMeseAnno(`${m}/${y}`)
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link to="/" className="text-sm text-blue-600 hover:underline">Accounts</Link>
-        <span className="text-gray-400">/</span>
-        <h1 className="text-xl font-semibold text-gray-900">{account}</h1>
+    <div className="space-y-5">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 text-sm">
+        <Link to="/" className="text-slate-400 hover:text-slate-600">Accounts</Link>
+        <span className="text-slate-300">/</span>
+        <span className="font-medium text-slate-900">{account}</span>
       </div>
 
-      {/* Month selector */}
-      <div className="flex items-center gap-3">
-        <label className="text-sm font-medium text-gray-700">Month:</label>
-        <input
-          type="month"
-          value={toInputMonth(meseAnno)}
-          onChange={handleMonthChange}
-          className="border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-        />
-      </div>
+      {/* Month selector + chart */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">Monthly totals by POD</h2>
+            <p className="text-xs text-slate-400 mt-0.5">{meseAnno}</p>
+          </div>
+          <input
+            type="month"
+            value={toInputMonth(meseAnno)}
+            onChange={handleMonth}
+            className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+          />
+        </div>
 
-      {/* Monthly summary chart */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <h2 className="text-sm font-semibold text-gray-700 mb-3">
-          Monthly totals by POD — {meseAnno}
-        </h2>
-        {summary.isLoading && <p className="text-gray-400 text-sm">Loading…</p>}
-        {summary.error && <p className="text-red-500 text-sm">No data for {meseAnno}</p>}
-        {summary.data && summary.data.length > 0 && (
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={summary.data} margin={{ top: 4, right: 16, left: 0, bottom: 40 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis
-                dataKey="pod"
-                tick={{ fontSize: 10 }}
-                angle={-35}
-                textAnchor="end"
-                interval={0}
+        {summary.isLoading && <div className="h-56 bg-slate-50 rounded-lg animate-pulse" />}
+        {summary.data && summary.data.length > 0 ? (
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={summary.data} margin={{ top: 4, right: 8, left: 0, bottom: 48 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+              <XAxis dataKey="pod" tick={{ fontSize: 9, fill: '#94a3b8' }} angle={-40} textAnchor="end" interval={0} />
+              <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} unit=" kWh" width={72} />
+              <Tooltip
+                contentStyle={{ border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 12 }}
+                formatter={(v: number) => [`${v?.toFixed(1)} kWh`, 'Active energy']}
               />
-              <YAxis tick={{ fontSize: 11 }} unit=" kWh" width={80} />
-              <Tooltip formatter={(v: number) => [`${v?.toFixed(1)} kWh`, 'Active energy']} />
-              <Bar dataKey="monthly_kwh" fill="#3b82f6" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="monthly_kwh" fill="#3b82f6" radius={[4, 4, 0, 0]} maxBarSize={40} />
             </BarChart>
           </ResponsiveContainer>
-        )}
-        {summary.data?.length === 0 && (
-          <p className="text-gray-400 text-sm">No measurements for {meseAnno}</p>
-        )}
+        ) : summary.data?.length === 0 ? (
+          <EmptyState text={`No data for ${meseAnno}`} />
+        ) : null}
       </div>
 
-      {/* POD list */}
-      <div className="bg-white border border-gray-200 rounded-lg">
-        <div className="px-4 py-3 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-700">
-            PODs {pods.data ? `(${pods.data.length})` : ''}
-          </h2>
+      {/* PODs / Metadata tabs */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+          <div className="flex gap-4">
+            {(['pods', 'metadata'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`text-sm font-medium pb-0.5 border-b-2 transition-colors ${
+                  tab === t ? 'border-blue-500 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {t === 'pods' ? `PODs (${pods.data?.length ?? '…'})` : 'F2G Metadata'}
+              </button>
+            ))}
+          </div>
         </div>
-        {pods.isLoading && <p className="p-4 text-gray-400 text-sm">Loading…</p>}
-        {pods.data && (
-          <ul className="divide-y divide-gray-50">
-            {pods.data.map((pod) => {
-              const row = summary.data?.find((r) => r.pod === pod)
-              return (
-                <li key={pod}>
+
+        {tab === 'pods' && (
+          <>
+            {pods.isLoading && <LoadingRows />}
+            <div className="divide-y divide-slate-50">
+              {pods.data?.map((pod) => {
+                const row = summary.data?.find((r) => r.pod === pod)
+                return (
                   <Link
+                    key={pod}
                     to={`/account/${account}/pod/${pod}`}
-                    className="flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors"
+                    className="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors group"
                   >
-                    <span className="text-sm font-mono text-gray-800">{pod}</span>
-                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                    <span className="text-sm font-mono text-slate-700">{pod}</span>
+                    <div className="flex items-center gap-4 text-xs text-slate-400">
                       {row && (
                         <>
-                          <span>{row.monthly_kwh?.toFixed(1)} kWh</span>
-                          <span>{row.days} days</span>
+                          <span className="text-slate-600 font-medium">{row.monthly_kwh?.toFixed(1)} kWh</span>
+                          <StatusBadge value={row.source} />
+                          <span>{row.days}d</span>
                         </>
                       )}
-                      <span className="text-blue-500">View →</span>
+                      <svg className="w-4 h-4 text-slate-300 group-hover:text-blue-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     </div>
                   </Link>
-                </li>
-              )
-            })}
-          </ul>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        {tab === 'metadata' && (
+          <>
+            {metadata.isLoading && <LoadingRows />}
+            {metadata.data?.length === 0 && <EmptyState text="No F2G metadata ingested yet" />}
+            {metadata.data && metadata.data.length > 0 && (
+              <>
+                <div className="grid grid-cols-5 px-5 py-2 bg-slate-50 text-xs font-medium text-slate-500 border-b border-slate-100">
+                  <span>POD</span><span>Contract DP</span><span>Voltage</span><span>Treatment</span><span>Valid from</span>
+                </div>
+                {metadata.data.map((m, i) => (
+                  <div key={i} className="grid grid-cols-5 px-5 py-2.5 text-xs border-b border-slate-50 hover:bg-slate-50">
+                    <span className="font-mono text-slate-700">{m.pod}</span>
+                    <span className="text-slate-600">{m.codice_dp ?? '—'}</span>
+                    <span className="text-slate-500">{m.tensione ? `${m.tensione}V` : '—'}</span>
+                    <span className="text-slate-500">{m.trattamento ?? '—'}</span>
+                    <span className="text-slate-400">{m.valid_from ?? '—'}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </>
         )}
       </div>
+    </div>
+  )
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <p className="px-5 py-8 text-sm text-slate-400 text-center">{text}</p>
+}
+
+function LoadingRows() {
+  return (
+    <div className="px-5 py-4 space-y-3">
+      {[1,2,3].map(i => <div key={i} className="h-4 bg-slate-100 rounded animate-pulse" />)}
     </div>
   )
 }

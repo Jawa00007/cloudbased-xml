@@ -56,3 +56,28 @@ export interface SyncStatus {
   files_skipped: number
   running: boolean
 }
+
+export interface MissingPeriod {
+  pod: string
+  data_misura: string
+  periods_found: number
+  missing: number
+  source: string
+}
+
+export interface CorrectionSummary {
+  pod: string
+  mese_anno: string
+  cod_flusso: string
+  count: number
+}
+
+export interface PodMetadata {
+  pod: string
+  codice_dp: string | null
+  tensione: number | null
+  trattamento: string | null
+  valid_from: string | null
+  valid_to: string | null
+  source_file: string | null
+}

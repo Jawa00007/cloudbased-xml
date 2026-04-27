@@ -31,6 +31,7 @@ from backend.api.routes.aggregation import router as aggregation_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.files import router as files_router
 from backend.api.routes.measurements import router as measurements_router
+from backend.api.routes.monitoring import router as monitoring_router
 from backend.api.routes.sync import router as sync_router
 from backend.core.config import settings
 from backend.scheduler.jobs import start_scheduler, stop_scheduler
@@ -92,6 +93,7 @@ app.include_router(measurements_router)
 app.include_router(aggregation_router)
 app.include_router(files_router)
 app.include_router(sync_router)
+app.include_router(monitoring_router)
 
 
 @app.get("/health", tags=["system"])

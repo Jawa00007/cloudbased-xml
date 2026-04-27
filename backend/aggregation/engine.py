@@ -247,6 +247,140 @@ async def get_period_data(
     return [PeriodRow(*r) for r in s_result.fetchall()]
 
 
+# ── Missing periods ────────────────────────────────────────────────────────────
+
+@dataclass
+class MissingPeriodRow:
+    pod: str
+    data_misura: date
+    periods_found: int
+    source: str   # E or S
+
+
+async def get_missing_periods(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str,
+) -> list[MissingPeriodRow]:
+    """
+    Return all POD+day combinations in a month where fewer than 96 periods
+    were recorded (DST days are excluded — only Dst=0 days counted).
+    """
+    result = await session.execute(text("""
+        SELECT pod, data_misura, COUNT(*) AS periods_found, 'E' AS source
+        FROM measurements
+        WHERE account_id = :account_id
+          AND mese_anno  = :mese_anno
+          AND tipo_dato  = 'E'
+          AND dst        = 0
+        GROUP BY pod, data_misura
+        HAVING COUNT(*) < 96
+        UNION ALL
+        SELECT pod, data_misura, COUNT(*) AS periods_found, 'S' AS source
+        FROM measurements_secondary
+        WHERE account_id = :account_id
+          AND mese_anno  = :mese_anno
+          AND dst        = 0
+          AND data_misura NOT IN (
+              SELECT DISTINCT data_misura
+              FROM measurements
+              WHERE account_id = :account_id AND mese_anno = :mese_anno
+          )
+        GROUP BY pod, data_misura
+        HAVING COUNT(*) < 96
+        ORDER BY pod, data_misura
+    """), {"account_id": account_id, "mese_anno": mese_anno})
+
+    return [
+        MissingPeriodRow(pod=r[0], data_misura=r[1], periods_found=r[2], source=r[3])
+        for r in result.fetchall()
+    ]
+
+
+# ── Period range ────────────────────────────────────────────────────────────────
+
+async def get_period_range(
+    session: AsyncSession,
+    account_id: str,
+    pod: str,
+    from_date: date,
+    to_date: date,
+    tipo_dato: str | None = None,
+) -> list[PeriodRow]:
+    """
+    Quarter-hourly periods for a POD across a date range (max 31 days).
+    tipo_dato=None returns both E and S (E preferred per day).
+    """
+    params = {"account_id": account_id, "pod": pod,
+               "from_date": from_date, "to_date": to_date}
+
+    td_filter = "AND tipo_dato = :tipo_dato" if tipo_dato else ""
+    if tipo_dato:
+        params["tipo_dato"] = tipo_dato
+
+    result = await session.execute(text(f"""
+        SELECT pod, data_misura, periodo, ea_kwh, er_kvarh, tipo_dato, dst
+        FROM measurements
+        WHERE account_id  = :account_id
+          AND pod         = :pod
+          AND data_misura >= :from_date
+          AND data_misura <= :to_date
+          {td_filter}
+        UNION ALL
+        SELECT pod, data_misura, periodo, ea_kwh, er_kvarh, tipo_dato, dst
+        FROM measurements_secondary
+        WHERE account_id  = :account_id
+          AND pod         = :pod
+          AND data_misura >= :from_date
+          AND data_misura <= :to_date
+          {td_filter}
+          AND data_misura NOT IN (
+              SELECT DISTINCT data_misura FROM measurements
+              WHERE account_id = :account_id AND pod = :pod
+                AND data_misura >= :from_date AND data_misura <= :to_date
+          )
+        ORDER BY data_misura, periodo
+    """), params)
+
+    return [PeriodRow(*r) for r in result.fetchall()]
+
+
+# ── Corrections summary ─────────────────────────────────────────────────────────
+
+@dataclass
+class CorrectionSummaryRow:
+    pod: str
+    mese_anno: str
+    cod_flusso: str
+    count: int
+
+
+async def get_corrections_summary(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str | None = None,
+) -> list[CorrectionSummaryRow]:
+    """Correction file counts grouped by POD + month + flow code."""
+    params: dict = {"account_id": account_id}
+    mese_filter = "AND mese_anno = :mese_anno" if mese_anno else ""
+    if mese_anno:
+        params["mese_anno"] = mese_anno
+
+    result = await session.execute(text(f"""
+        SELECT pod, mese_anno, cod_flusso, COUNT(*) AS cnt
+        FROM corrections
+        WHERE account_id = :account_id
+          {mese_filter}
+        GROUP BY pod, mese_anno, cod_flusso
+        ORDER BY mese_anno DESC, pod
+    """), params)
+
+    return [
+        CorrectionSummaryRow(pod=r[0], mese_anno=r[1], cod_flusso=r[2], count=r[3])
+        for r in result.fetchall()
+    ]
+
+
 # ── POD list ───────────────────────────────────────────────────────────────────
 
 async def get_pods(

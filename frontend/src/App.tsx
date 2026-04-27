@@ -5,6 +5,7 @@ import AccountPage from './pages/AccountPage'
 import PodPage from './pages/PodPage'
 import FilesPage from './pages/FilesPage'
 import SyncPage from './pages/SyncPage'
+import MonitoringPage from './pages/MonitoringPage'
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/account/:accountId/pod/:pod" element={<PodPage />} />
         <Route path="/files" element={<FilesPage />} />
         <Route path="/sync" element={<SyncPage />} />
+        <Route path="/monitoring" element={<MonitoringPage />} />
       </Routes>
     </Layout>
   )

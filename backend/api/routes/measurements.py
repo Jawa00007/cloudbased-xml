@@ -15,9 +15,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 
-from backend.aggregation.engine import get_period_data, get_pods
+from backend.aggregation.engine import get_period_data, get_period_range, get_pods
 from backend.api.auth import require_auth
-from backend.api.schemas import MeasurementOut, PeriodOut, TotalizerOut
+from backend.api.schemas import MeasurementOut, PeriodOut, PodMetadataOut, TotalizerOut
 from backend.db.session import get_session
 from backend.ingestion.ingest import schema_for
 
@@ -141,4 +141,44 @@ async def get_totals(
         er_f1=r[11], er_f2=r[12], er_f3=r[13],
         pot_f1=r[14], pot_f2=r[15], pot_f3=r[16],
         cod_flusso=r[17], source_file=r[18],
+    ) for r in rows]
+
+
+@router.get("/measurements/range", response_model=list[PeriodOut])
+async def get_measurements_range(
+    account: Annotated[str, Query()],
+    pod: Annotated[str, Query()],
+    from_date: Annotated[date, Query(description="YYYY-MM-DD")],
+    to_date: Annotated[date, Query(description="YYYY-MM-DD")],
+    tipo_dato: Annotated[str | None, Query(description="E or S")] = None,
+    _: Annotated[str, Depends(require_auth)] = None,
+) -> list[PeriodOut]:
+    if (to_date - from_date).days > 31:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 31 days")
+    schema = _resolve_schema(account)
+    async with get_session(schema) as session:
+        rows = await get_period_range(session, account, pod, from_date, to_date, tipo_dato)
+    return [PeriodOut(
+        pod=r.pod, data_misura=r.data_misura, periodo=r.periodo,
+        ea_kwh=r.ea_kwh, er_kvarh=r.er_kvarh, tipo_dato=r.tipo_dato, dst=r.dst,
+    ) for r in rows]
+
+
+@router.get("/pod_metadata", response_model=list[PodMetadataOut])
+async def get_pod_metadata(
+    account: Annotated[str, Query()],
+    _: Annotated[str, Depends(require_auth)] = None,
+) -> list[PodMetadataOut]:
+    schema = _resolve_schema(account)
+    async with get_session(schema) as session:
+        result = await session.execute(text("""
+            SELECT pod, codice_dp, tensione, trattamento, valid_from, valid_to, source_file
+            FROM pod_metadata
+            WHERE account_id = :account_id
+            ORDER BY pod, valid_from DESC NULLS LAST
+        """), {"account_id": account})
+        rows = result.fetchall()
+    return [PodMetadataOut(
+        pod=r[0], codice_dp=r[1], tensione=r[2], trattamento=r[3],
+        valid_from=r[4], valid_to=r[5], source_file=r[6],
     ) for r in rows]

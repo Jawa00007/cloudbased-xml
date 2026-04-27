@@ -97,6 +97,33 @@ class FileLogOut(BaseModel):
     error_message: str | None
 
 
+# ── Monitoring ─────────────────────────────────────────────────────────────────
+
+class MissingPeriodOut(BaseModel):
+    pod: str
+    data_misura: date
+    periods_found: int
+    missing: int
+    source: str
+
+
+class CorrectionSummaryOut(BaseModel):
+    pod: str
+    mese_anno: str
+    cod_flusso: str
+    count: int
+
+
+class PodMetadataOut(BaseModel):
+    pod: str
+    codice_dp: str | None
+    tensione: int | None
+    trattamento: str | None
+    valid_from: date | None
+    valid_to: date | None
+    source_file: str | None
+
+
 # ── Sync ───────────────────────────────────────────────────────────────────────
 
 class SyncStatusOut(BaseModel):
