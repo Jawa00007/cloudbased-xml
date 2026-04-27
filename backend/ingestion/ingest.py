@@ -26,6 +26,7 @@ if sys.platform == "win32":
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from backend.core.config import settings
 from backend.db.session import get_session
 from backend.db.upsert import (
     delete_annullamento,
@@ -40,30 +41,39 @@ from backend.parser.router import route_file
 
 logger = logging.getLogger(__name__)
 
-DATA_ROOT = Path(__file__).parent.parent.parent / "data"
+# Resolved at runtime so SII_DATA_PATH env var is honoured
+DATA_ROOT = Path(settings.SII_DATA_PATH)
 
-# Account → PostgreSQL schema name mapping
-# Space/special chars in account names are normalised to underscores
+# Account folder name → PostgreSQL schema name
+# Keys are matched case-insensitively so Italian server uppercase
+# folder names (BAT, DINAMO, EGOGREEN …) map correctly.
 ACCOUNT_SCHEMA_MAP: dict[str, str] = {
     "BAT": "bat",
     "CH4": "ch4",
-    "Dinamo Trade": "dinamo_trade",
-    "Egogreen": "egogreen",
-    "Energetica": "energetica",
-    "Energit": "energit",
-    "Enjoy Energy": "enjoy_energy",
-    "Onda Più": "onda_piu",
-    "Power.it": "power_it",
-    "Royal Group": "royal_group",
+    "DINAMO": "dinamo_trade",
+    "DINAMO TRADE": "dinamo_trade",
+    "EGOGREEN": "egogreen",
+    "ENERGETICA": "energetica",
+    "ENERGIT": "energit",
+    "ENJOY": "enjoy_energy",
+    "ENJOY ENERGY": "enjoy_energy",
+    "ONDA": "onda_piu",
+    "ONDA PIU": "onda_piu",
+    "POWER": "power_it",
+    "POWER.IT": "power_it",
+    "ROYAL": "royal_group",
+    "ROYAL GROUP": "royal_group",
     "SOS": "sos",
+    "TOP": "top_energy",
     "TOP ENERGY": "top_energy",
 }
 
 
 def schema_for(account_id: str) -> str:
-    if account_id in ACCOUNT_SCHEMA_MAP:
-        return ACCOUNT_SCHEMA_MAP[account_id]
-    # Fallback: normalise name
+    upper = account_id.upper()
+    if upper in ACCOUNT_SCHEMA_MAP:
+        return ACCOUNT_SCHEMA_MAP[upper]
+    # Fallback: normalise name as-is
     return account_id.lower().replace(" ", "_").replace(".", "_").replace("à", "a")
 
 
@@ -222,16 +232,16 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                 logger.error("Failed to log error for %s: %s", file_name, log_exc)
 
 
-async def ingest_account(account_id: str) -> None:
+async def ingest_account(account_id: str, data_root: Path | None = None) -> None:
     schema = schema_for(account_id)
-    account_root = DATA_ROOT / account_id
+    account_root = (data_root or DATA_ROOT) / account_id
     entries = walk_account(account_root, account_id)
 
     logger.info(
         "Ingesting %s (%s) — %d files found", account_id, schema, len(entries)
     )
 
-    ok = error = skipped = 0
+    ok = error = 0
     for i, entry in enumerate(entries, 1):
         if i % 500 == 0:
             logger.info("  Progress: %d / %d", i, len(entries))
@@ -242,15 +252,14 @@ async def ingest_account(account_id: str) -> None:
             logger.error("Unhandled error on %s: %s", entry.file_name, exc)
             error += 1
 
-    logger.info(
-        "Done %s — ok:%d errors:%d", account_id, ok, error
-    )
+    logger.info("Done %s — ok:%d errors:%d", account_id, ok, error)
 
 
-async def ingest_all() -> None:
-    for account_dir in sorted(DATA_ROOT.iterdir()):
+async def ingest_all(data_root: Path | None = None) -> None:
+    root = data_root or DATA_ROOT
+    for account_dir in sorted(root.iterdir()):
         if account_dir.is_dir() and not account_dir.name.startswith("#"):
-            await ingest_account(account_dir.name)
+            await ingest_account(account_dir.name, data_root=root)
 
 
 def main() -> None:
@@ -258,6 +267,11 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--account", help="Account name, e.g. BAT")
     group.add_argument("--all", action="store_true", help="Ingest all accounts")
+    parser.add_argument(
+        "--data-path",
+        default=None,
+        help="Override SII_DATA_PATH — path to synced SII_CLOUD folder",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -265,10 +279,12 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
+    data_root = Path(args.data_path) if args.data_path else None
+
     if args.all:
-        asyncio.run(ingest_all())
+        asyncio.run(ingest_all(data_root=data_root))
     else:
-        asyncio.run(ingest_account(args.account))
+        asyncio.run(ingest_account(args.account, data_root=data_root))
 
 
 if __name__ == "__main__":
