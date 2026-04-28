@@ -34,14 +34,18 @@ if sys.platform == "win32":
 def _fix_db_url(url: str) -> str:
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
-            return "postgresql+psycopg://" + url[len(prefix):]
+            url = "postgresql+psycopg://" + url[len(prefix):]
+            break
+    # Supabase Session Pooler requires SSL — append if not already specified
+    if "sslmode" not in url:
+        sep = "&" if "?" in url else "?"
+        url = url + sep + "sslmode=require"
     return url
 
 engine = create_async_engine(
     _fix_db_url(settings.DATABASE_URL),
     echo=settings.LOG_LEVEL == "DEBUG",
     pool_pre_ping=True,
-    connect_args={"sslmode": "require"},
 )
 
 _SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
