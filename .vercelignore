@@ -1,0 +1,15 @@
+data/
+reports/
+backend/
+scripts/
+*.log
+*.py
+*.ini
+seed_data.py
+test_parser.py
+report.py
+deploy_server.sh
+requirements.txt
+runtime.txt
+render.yaml
+alembic.ini
