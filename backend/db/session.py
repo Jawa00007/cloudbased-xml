@@ -29,8 +29,16 @@ if sys.platform == "win32":
         asyncio.WindowsSelectorEventLoopPolicy()
     )
 
+# Supabase gives a postgresql:// or postgres:// URL by default.
+# psycopg3 (async) requires the postgresql+psycopg:// scheme — fix it transparently.
+def _fix_db_url(url: str) -> str:
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    _fix_db_url(settings.DATABASE_URL),
     echo=settings.LOG_LEVEL == "DEBUG",
     pool_pre_ping=True,
 )
