@@ -48,9 +48,6 @@ async def get_measurements(
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         rows = await get_period_data(session, account, pod, date_)
-    if not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"No measurements for {pod} on {date_}")
     return [PeriodOut(
         pod=r.pod,
         data_misura=r.data_misura,

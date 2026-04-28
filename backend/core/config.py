@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     # Data path — where synced SII_CLOUD files live on this machine
     SII_DATA_PATH: str = "data"
 
+    # CORS — comma-separated list of allowed origins, e.g. https://sii-dashboard.vercel.app
+    # Set to * to allow all (default for local dev)
+    ALLOWED_ORIGINS: str = "*"
+
     # Auth
     SECRET_KEY: str = "dev-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"

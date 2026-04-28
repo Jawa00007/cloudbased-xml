@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: sii-backend
+    runtime: python
+    region: frankfurt          # closest to Italian server
+    plan: starter              # $7/mo — free tier sleeps after 15 min
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.api.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false            # set manually in Render dashboard
+      - key: API_KEY
+        generateValue: true    # Render auto-generates a secure value
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ALLOWED_ORIGINS
+        sync: false            # set to your Vercel URL after deploy, e.g. https://sii-dashboard.vercel.app
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false            # set manually — leave empty to disable JWT login

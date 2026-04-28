@@ -121,7 +121,8 @@ export default function PodPage() {
 
             {periods.isLoading && <ChartSkeleton />}
             {periods.error   && <ErrorMsg text={`No data for ${date}`} />}
-            {periods.data    && (
+            {periods.data && periods.data.length === 0 && <ErrorMsg text={`No readings for ${date}`} />}
+            {periods.data && periods.data.length > 0 && (
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart
                   data={periods.data.map(r => ({ time: periodToTime(r.periodo), kWh: r.ea_kwh != null ? +r.ea_kwh : null }))}
@@ -140,7 +141,7 @@ export default function PodPage() {
           </div>
 
           {/* Period table */}
-          {periods.data && (
+          {periods.data && periods.data.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="grid grid-cols-5 px-5 py-2.5 bg-slate-50 text-xs font-medium text-slate-500 border-b border-slate-100">
                 <span>Period</span><span>Time</span><span>kWh</span><span>kVArh</span><span>Type / DST</span>
@@ -249,7 +250,8 @@ export default function PodPage() {
             </div>
             {daily.isLoading && <ChartSkeleton />}
             {daily.error    && <ErrorMsg text={`No data for ${meseAnno}`} />}
-            {daily.data && (
+            {daily.data && daily.data.length === 0 && <ErrorMsg text={`No daily data for ${meseAnno}`} />}
+            {daily.data && daily.data.length > 0 && (
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={daily.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -263,7 +265,7 @@ export default function PodPage() {
             )}
           </div>
 
-          {daily.data && (
+          {daily.data && daily.data.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="grid grid-cols-5 px-5 py-2.5 bg-slate-50 text-xs font-medium text-slate-500 border-b border-slate-100">
                 <span>Date</span><span>kWh</span><span>kVArh</span><span>Periods</span><span>Source</span>
@@ -312,7 +314,8 @@ export default function PodPage() {
             </div>
             {monthly.isLoading && <ChartSkeleton />}
             {monthly.error    && <ErrorMsg text={`No data for ${year}`} />}
-            {monthly.data && (
+            {monthly.data && monthly.data.length === 0 && <ErrorMsg text={`No data for ${year}`} />}
+            {monthly.data && monthly.data.length > 0 && (
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={monthly.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
@@ -326,7 +329,7 @@ export default function PodPage() {
             )}
           </div>
 
-          {monthly.data && (
+          {monthly.data && monthly.data.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               <div className="grid grid-cols-5 px-5 py-2.5 bg-slate-50 text-xs font-medium text-slate-500 border-b border-slate-100">
                 <span>Month</span><span>kWh</span><span>kVArh</span><span>Days</span><span>Source</span>

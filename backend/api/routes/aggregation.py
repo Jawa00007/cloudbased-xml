@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 
 from backend.aggregation.engine import (
     get_daily_totals,
@@ -36,9 +36,6 @@ async def daily_totals(
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_daily_totals(session, account, pod, mese_anno)
-    if not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"No data for {pod} in {mese_anno}")
     return [DailyTotalOut(
         pod=r.pod, data_misura=r.data_misura,
         daily_kwh=r.daily_kwh, daily_kvarh=r.daily_kvarh,
@@ -56,9 +53,6 @@ async def monthly_totals(
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_yearly_totals(session, account, pod, year)
-    if not rows:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"No data for {pod} in {year}")
     return [MonthlyTotalOut(
         pod=r.pod, mese_anno=r.mese_anno,
         monthly_kwh=r.monthly_kwh, monthly_kvarh=r.monthly_kvarh,
