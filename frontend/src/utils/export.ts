@@ -1,9 +1,12 @@
-type Row = Record<string, unknown>
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Row = Record<string, any>
 
-export function exportCSV(data: Row[], filename: string) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function exportCSV(data: any[], filename: string) {
   if (!data.length) return
-  const headers = Object.keys(data[0])
-  const rows = data.map((r) =>
+  const rows = data as Row[]
+  const headers = Object.keys(rows[0])
+  const lines = rows.map((r) =>
     headers.map((h) => {
       const v = r[h]
       const s = v == null ? '' : String(v)
@@ -11,7 +14,7 @@ export function exportCSV(data: Row[], filename: string) {
         ? `"${s.replace(/"/g, '""')}"` : s
     }).join(',')
   )
-  const csv = [headers.join(','), ...rows].join('\n')
+  const csv = [headers.join(','), ...lines].join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

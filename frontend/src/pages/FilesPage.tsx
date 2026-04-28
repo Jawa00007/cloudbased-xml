@@ -19,7 +19,8 @@ export default function FilesPage() {
   })
 
   const countsByStatus = files.data?.reduce<Record<string, number>>((acc, f) => {
-    acc[f.status] = (acc[f.status] ?? 0) + 1
+    const key = f.status ?? 'unknown'
+    acc[key] = (acc[key] ?? 0) + 1
     return acc
   }, {}) ?? {}
 
