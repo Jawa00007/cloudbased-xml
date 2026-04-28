@@ -41,6 +41,7 @@ engine = create_async_engine(
     _fix_db_url(settings.DATABASE_URL),
     echo=settings.LOG_LEVEL == "DEBUG",
     pool_pre_ping=True,
+    connect_args={"sslmode": "require"},
 )
 
 _SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
