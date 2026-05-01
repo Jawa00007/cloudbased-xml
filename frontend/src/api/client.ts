@@ -4,18 +4,53 @@ import type {
 } from './types'
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
-const API_KEY = import.meta.env.VITE_API_KEY ?? ''
+
+const TOKEN_KEY = 'sii_token'
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function logout(): void {
+  localStorage.removeItem(TOKEN_KEY)
+  window.location.href = '/login'
+}
+
+export async function login(username: string, password: string): Promise<void> {
+  const res = await fetch(`${BASE}/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text.includes('detail') ? JSON.parse(text).detail : 'Invalid credentials')
+  }
+  const data = await res.json()
+  setToken(data.access_token)
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 async function get<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(BASE + path)
   if (params) Object.entries(params).forEach(([k, v]) => v && url.searchParams.set(k, v))
-  const res = await fetch(url.toString(), { headers: { 'X-API-Key': API_KEY } })
+  const res = await fetch(url.toString(), { headers: authHeaders() })
+  if (res.status === 401) { logout(); throw new Error('Session expired') }
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json() as Promise<T>
 }
 
 async function post<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { method: 'POST', headers: { 'X-API-Key': API_KEY } })
+  const res = await fetch(BASE + path, { method: 'POST', headers: authHeaders() })
+  if (res.status === 401) { logout(); throw new Error('Session expired') }
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json() as Promise<T>
 }

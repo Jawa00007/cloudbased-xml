@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { logout } from '../api/client'
 
 const NAV = [
   {
@@ -80,8 +81,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        <div className="px-5 py-4 border-t border-slate-100">
-          <p className="text-[10px] text-slate-400">SII XML Platform v1.0</p>
+        <div className="px-3 py-4 border-t border-slate-100 space-y-3">
+          <p className="text-[10px] text-slate-400 px-2">SII XML Platform v1.0</p>
+          <button
+            onClick={logout}
+            className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm text-slate-500 hover:bg-red-50 hover:text-red-600 transition-all"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Sign out
+          </button>
         </div>
       </aside>
 
