@@ -187,6 +187,7 @@ async def update_loss_rule(
 
 @router.delete(
     "/loss-config/{rule_id}",
+    response_model=None,
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a loss config rule",
 )
@@ -282,6 +283,7 @@ async def set_dispatching_weights(
 
 @router.delete(
     "/dispatching-config",
+    response_model=None,
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete dispatching weights for an account + dispatching point",
 )
