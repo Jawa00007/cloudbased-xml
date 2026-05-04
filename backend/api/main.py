@@ -27,13 +27,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.auth import set_admin_credentials
 from backend.api.routes.accounts import router as accounts_router
+from backend.api.routes.admin import router as admin_router
 from backend.api.routes.aggregation import router as aggregation_router
 from backend.api.routes.auth import router as auth_router
 from backend.api.routes.files import router as files_router
+from backend.api.routes.forecast import router as forecast_router
 from backend.api.routes.measurements import router as measurements_router
 from backend.api.routes.monitoring import router as monitoring_router
 from backend.api.routes.sync import router as sync_router
 from backend.core.config import settings
+from backend.db.session import get_public_session
+from backend.forecast.loss_calculator import DEFAULT_RULES
 from backend.scheduler.jobs import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -55,6 +59,28 @@ async def lifespan(app: FastAPI):
         logger.info("Admin user %r registered", admin_user)
     else:
         logger.warning("ADMIN_PASSWORD not set — JWT login disabled (API key still works)")
+
+    # Seed default loss config rules if the table is empty
+    try:
+        async with get_public_session() as session:
+            from sqlalchemy import text as _text
+            count = (await session.execute(_text("SELECT COUNT(*) FROM loss_config"))).scalar()
+            if count == 0:
+                _SEED = [
+                    ("Missing POD (high voltage fallback)", "missing_pod",    None,       0.10,  1),
+                    ("High voltage 220/380V",               "tensione_range", "220,380",  0.10,  2),
+                    ("MT tariff",                           "tariffa_prefix", "MT",       0.038, 3),
+                    ("Default (all others)",                "default",        None,       0.018, 99),
+                ]
+                for name, ct, cv, lp, pr in _SEED:
+                    await session.execute(_text("""
+                        INSERT INTO loss_config (name, condition_type, condition_value, loss_pct, priority)
+                        VALUES (:name, :ct, :cv, :lp, :pr)
+                        ON CONFLICT DO NOTHING
+                    """), {"name": name, "ct": ct, "cv": cv, "lp": lp, "pr": pr})
+                logger.info("Seeded %d default loss config rules", len(_SEED))
+    except Exception as exc:
+        logger.warning("Could not seed loss_config (table may not exist yet): %s", exc)
 
     # Start nightly scheduler (only in production / staging)
     if settings.ENVIRONMENT != "development":
@@ -96,6 +122,8 @@ app.include_router(aggregation_router)
 app.include_router(files_router)
 app.include_router(sync_router)
 app.include_router(monitoring_router)
+app.include_router(admin_router)
+app.include_router(forecast_router)
 
 
 @app.get("/health", tags=["system"])

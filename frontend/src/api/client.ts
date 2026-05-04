@@ -1,5 +1,6 @@
 import type {
-  Account, CorrectionSummary, DailyTotal, FileLog,
+  Account, AnagraficaRecord, CompareOut, CorrectionSummary, DailyTotal, FileLog,
+  ForecastGenerateResult, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
 } from './types'
 
@@ -48,11 +49,40 @@ async function get<T>(path: string, params?: Record<string, string>): Promise<T>
   return res.json() as Promise<T>
 }
 
-async function post<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { method: 'POST', headers: authHeaders() })
+async function post<T>(path: string, body?: unknown): Promise<T> {
+  const hasBody = body !== undefined
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { ...authHeaders(), ...(hasBody ? { 'Content-Type': 'application/json' } : {}) },
+    body: hasBody ? JSON.stringify(body) : undefined,
+  })
   if (res.status === 401) { logout(); throw new Error('Session expired') }
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json() as Promise<T>
+}
+
+async function postForm<T>(path: string, formData: FormData): Promise<T> {
+  const res = await fetch(BASE + path, { method: 'POST', headers: authHeaders(), body: formData })
+  if (res.status === 401) { logout(); throw new Error('Session expired') }
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json() as Promise<T>
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { logout(); throw new Error('Session expired') }
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  return res.json() as Promise<T>
+}
+
+async function del(path: string): Promise<void> {
+  const res = await fetch(BASE + path, { method: 'DELETE', headers: authHeaders() })
+  if (res.status === 401) { logout(); throw new Error('Session expired') }
+  if (!res.ok && res.status !== 204) throw new Error(`${res.status}: ${await res.text()}`)
 }
 
 export const fetchAccounts    = () => get<Account[]>('/accounts')
@@ -91,3 +121,40 @@ export const fetchMissingPeriods  = (account: string, mese_anno: string) =>
 
 export const fetchCorrections = (account: string, mese_anno?: string) =>
   get<CorrectionSummary[]>('/monitoring/corrections', { account, ...(mese_anno ? { mese_anno } : {}) })
+
+// ── Forecast ──────────────────────────────────────────────────────────────────
+
+export const generateForecast = (account_id: string, mese_anno: string) =>
+  post<ForecastGenerateResult>('/forecast/generate', { account_id, mese_anno })
+
+export const fetchForecast = (account_id: string, mese_anno: string, pod?: string) =>
+  get<ForecastPeriod[]>(`/forecast/${account_id}/${encodeURIComponent(mese_anno)}`, pod ? { pod } : {})
+
+export const fetchForecastCompare = (
+  account_id: string, pod: string, from_date: string, to_date: string,
+) => get<CompareOut>('/forecast/compare', { account_id, pod, from_date, to_date })
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
+export const fetchLossConfig = (account_id?: string) =>
+  get<LossRule[]>('/admin/loss-config', account_id ? { account_id } : {})
+
+export const createLossRule = (body: Omit<LossRule, 'id'>) =>
+  post<LossRule>('/admin/loss-config', body)
+
+export const updateLossRule = (id: number, body: Omit<LossRule, 'id'>) =>
+  put<LossRule>(`/admin/loss-config/${id}`, body)
+
+export const deleteLossRule = (id: number) =>
+  del(`/admin/loss-config/${id}`)
+
+export const fetchAnagrafica = (account_id: string, mese_anno: string) =>
+  get<AnagraficaRecord[]>('/admin/anagrafica', { account_id, mese_anno })
+
+export const uploadAnagrafica = (account_id: string, file: File) => {
+  const form = new FormData()
+  form.append('file', file)
+  return postForm<{ message: string; records_upserted: number; mese_anno: string }>(
+    `/admin/anagrafica/upload?account_id=${encodeURIComponent(account_id)}`, form,
+  )
+}

@@ -81,3 +81,61 @@ export interface PodMetadata {
   valid_to: string | null
   source_file: string | null
 }
+
+// ── Forecast ──────────────────────────────────────────────────────────────────
+
+export interface ForecastPeriod {
+  pod: string
+  mese_anno: string
+  punto_dispacciamento: string | null
+  forecast_date: string
+  source_date: string | null
+  periodo: number
+  ea_mwh: number | null
+  ea_mwh_with_loss: number | null
+  loss_pct: number | null
+  source_type: string
+}
+
+export interface ForecastGenerateResult {
+  message: string
+  account_id: string
+  mese_anno: string
+  periods_written: number
+}
+
+export interface CompareOut {
+  account_id: string
+  pod: string
+  current_period: { from: string; to: string; data: { date: string; periodo: number; ea_mwh: number | null }[] }
+  previous_period: { from: string; to: string; data: { date: string; periodo: number; ea_mwh: number | null }[] }
+  current_total_mwh: number
+  previous_total_mwh: number
+}
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
+export interface LossRule {
+  id: number
+  account_id: string | null
+  name: string
+  condition_type: string
+  condition_value: string | null
+  loss_pct: number
+  priority: number
+  description: string | null
+}
+
+export interface AnagraficaRecord {
+  pod: string
+  mese_anno: string
+  piva_utente: string | null
+  punto_dispacciamento: string | null
+  tipo_misuratore: string | null
+  trattamento: string | null
+  tensione: number | null
+  codice_tariffa: string | null
+  consumo_tot: number | null
+  included: boolean
+  source_file: string | null
+}

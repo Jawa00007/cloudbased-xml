@@ -79,6 +79,19 @@ def _safe_schema(schema: str) -> str:
     return cleaned
 
 
+@asynccontextmanager
+async def get_public_session() -> AsyncIterator[AsyncSession]:
+    """Yield a session scoped to the public schema (loss_config, dispatching_config, etc.)."""
+    async with _SessionFactory() as session:
+        await session.execute(text("SET search_path TO public"))
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
 async def dispose_engine() -> None:
     """Close all connections — call on app shutdown."""
     await engine.dispose()

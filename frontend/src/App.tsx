@@ -8,6 +8,8 @@ import PodPage from './pages/PodPage'
 import FilesPage from './pages/FilesPage'
 import SyncPage from './pages/SyncPage'
 import MonitoringPage from './pages/MonitoringPage'
+import ForecastPage from './pages/ForecastPage'
+import AdminPage from './pages/AdminPage'
 
 export default function App() {
   return (
@@ -25,6 +27,8 @@ export default function App() {
                 <Route path="/files" element={<FilesPage />} />
                 <Route path="/sync" element={<SyncPage />} />
                 <Route path="/monitoring" element={<MonitoringPage />} />
+                <Route path="/forecast" element={<ForecastPage />} />
+                <Route path="/admin" element={<AdminPage />} />
               </Routes>
             </Layout>
           </ProtectedRoute>
