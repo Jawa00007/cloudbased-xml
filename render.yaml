@@ -2,25 +2,27 @@ services:
   - type: web
     name: sii-backend
     runtime: python
-    region: frankfurt          # closest to Italian server
+    region: frankfurt          # closest to Italian Nextcloud server
     plan: starter              # $7/mo — free tier sleeps after 15 min
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.api.main:app --host 0.0.0.0 --port $PORT --workers 2
+    startCommand: uvicorn backend.api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        sync: false            # set manually in Render dashboard
-      - key: API_KEY
-        generateValue: true    # Render auto-generates a secure value
+        sync: false            # set in Render dashboard: postgresql+psycopg://...
       - key: SECRET_KEY
-        generateValue: true
+        generateValue: true    # Render auto-generates a secure value
+      - key: API_KEY
+        generateValue: true    # static API key for machine clients
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false            # set in Render dashboard — required to enable JWT login
       - key: ENVIRONMENT
         value: production
       - key: LOG_LEVEL
         value: INFO
+      - key: SII_DATA_PATH
+        value: /data/sii       # no-op on Render (no local files); scheduler skips gracefully
       - key: ALLOWED_ORIGINS
-        sync: false            # set to your Vercel URL after deploy, e.g. https://sii-dashboard.vercel.app
-      - key: ADMIN_USERNAME
-        value: admin
-      - key: ADMIN_PASSWORD
-        sync: false            # set manually — leave empty to disable JWT login
+        sync: false            # set to your Vercel URL: https://<your-app>.vercel.app

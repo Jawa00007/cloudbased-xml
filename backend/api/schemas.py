@@ -140,6 +140,112 @@ class SyncTriggerOut(BaseModel):
     account_id: str | None   # None = all accounts
 
 
+# ── ANAGRAFICA ─────────────────────────────────────────────────────────────────
+
+class AnagraficaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    pod: str
+    mese_anno: str
+    piva_utente: str | None
+    punto_dispacciamento: str | None
+    tipo_misuratore: str | None
+    trattamento: str | None
+    tensione: int | None
+    codice_tariffa: str | None
+    consumo_tot: float | None
+    included: bool
+    source_file: str | None
+
+
+class AnagraficaUploadOut(BaseModel):
+    message: str
+    account_id: str
+    mese_anno: str
+    records_upserted: int
+
+
+# ── Forecast ───────────────────────────────────────────────────────────────────
+
+class ForecastGenerateIn(BaseModel):
+    account_id: str
+    mese_anno: str  # MM/YYYY
+
+
+class ForecastPeriodOut(BaseModel):
+    pod: str
+    mese_anno: str
+    punto_dispacciamento: str | None
+    forecast_date: date
+    source_date: date | None
+    periodo: int
+    ea_mwh: float | None
+    ea_mwh_with_loss: float | None
+    loss_pct: float | None
+    source_type: str
+
+
+class ForecastGenerateOut(BaseModel):
+    message: str
+    account_id: str
+    mese_anno: str
+    periods_written: int
+
+
+class ComparePeriodData(BaseModel):
+    date: str
+    periodo: int
+    ea_mwh: float | None
+
+
+class CompareOut(BaseModel):
+    account_id: str
+    pod: str
+    current_period: dict[str, Any]
+    previous_period: dict[str, Any]
+    current_total_mwh: float
+    previous_total_mwh: float
+
+
+# ── Admin — loss config ────────────────────────────────────────────────────────
+
+class LossRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    account_id: str | None
+    name: str
+    condition_type: str
+    condition_value: str | None
+    loss_pct: float
+    priority: int
+    description: str | None
+
+
+class LossRuleIn(BaseModel):
+    account_id: str | None = None
+    name: str
+    condition_type: str           # "tensione_range"|"tariffa_prefix"|"missing_pod"|"default"
+    condition_value: str | None = None
+    loss_pct: float
+    priority: int
+    description: str | None = None
+
+
+# ── Admin — dispatching config ────────────────────────────────────────────────
+
+class DispatchingWeightOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    account_id: str
+    punto_dispacciamento: str
+    periodo: int
+    pct: float
+
+
+class DispatchingWeightIn(BaseModel):
+    punto_dispacciamento: str
+    weights: list[float]          # exactly 96 values summing to 1.0
+
+
 # ── Totals (totalizer table) ───────────────────────────────────────────────────
 
 class TotalizerOut(BaseModel):

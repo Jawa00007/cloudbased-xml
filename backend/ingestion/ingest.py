@@ -257,6 +257,9 @@ async def ingest_account(account_id: str, data_root: Path | None = None) -> None
 
 async def ingest_all(data_root: Path | None = None) -> None:
     root = data_root or DATA_ROOT
+    if not root.exists():
+        logger.warning("SII_DATA_PATH %r does not exist — skipping ingestion", str(root))
+        return
     for account_dir in sorted(root.iterdir()):
         if account_dir.is_dir() and not account_dir.name.startswith("#"):
             await ingest_account(account_dir.name, data_root=root)

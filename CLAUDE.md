@@ -616,3 +616,13 @@ Fields are NOT flat children of `<DatiPod>`. Actual structure:
   RFO, RFO2G, RNO, RNO2G, RNV, RSN, RSN2G, RT2G, S2G, SM2G, SMIS, SNF, SNM, SNM2G,
   SOF, SOS, VNO, VNO2G, VP2G — some (SMIS, SNF, SOF, S2G) are not in the spec but appear
   in real files and parse correctly as curve or totalizer via shape detection.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

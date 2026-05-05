@@ -52,3 +52,12 @@ desktop.ini
 
 # Logs
 *.log
+
+# Vercel
+.vercel
+
+# Claude Code local config and memory (personal, not project-shared)
+.claude/
+
+# Graphify knowledge graph output (regenerate with: graphify update .)
+graphify-out/

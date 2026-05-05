@@ -1,5 +1,5 @@
 """
-F2G parser — dispatching point (DatiPod) metadata.
+F2G parser — enriched dispatching point (DatiPod) metadata.
 
 F2G files have a completely different structure from all other SII flows:
   - No <Misura> block
@@ -7,6 +7,7 @@ F2G files have a completely different structure from all other SII flows:
   - <CodContrDisp> lives in <IdentificativiFlusso> (shared across all PODs)
   - Each <DatiPod> has <DataInizio> (valid_from) and optional <DataFine> (valid_to)
   - <Trattamento> and <Tensione> are in <DatiPdp>
+  - PIvaUtente / PIvaDistributore may appear in <IdentificativiFlusso>
 
 Target table: pod_metadata
 """
@@ -26,6 +27,12 @@ class F2GRecord:
     trattamento: str | None
     valid_from: date | None
     valid_to: date | None
+    # Extended fields
+    piva_utente: str | None
+    piva_distributore: str | None
+    punto_dispacciamento: str | None
+    tipo_misuratore: str | None
+    codice_tariffa: str | None
     source_file: str
 
 
@@ -40,22 +47,42 @@ def _parse_italian_date(value: str | None) -> date | None:
         return None
 
 
-def parse_f2g_file(root: ET.Element, source_file: str) -> list[F2GRecord]:
+def _text(el: ET.Element | None, path: str) -> str | None:
+    if el is None:
+        return None
+    raw = el.findtext(path)
+    return raw.strip() or None if raw else None
+
+
+def parse_f2g_file(
+    root: ET.Element,
+    source_file: str,
+    piva_utente_from_filename: str | None = None,
+    piva_distributore_from_filename: str | None = None,
+) -> list[F2GRecord]:
     """
     Extract all POD dispatching-point records from an F2G XML root.
 
     Args:
-        root:        Parsed XML root element of an F2G file.
-        source_file: Filename (for traceability — stored in pod_metadata.source_file).
+        root:                          Parsed XML root element of an F2G file.
+        source_file:                   Filename (for traceability).
+        piva_utente_from_filename:     PIva extracted from the filename (fallback).
+        piva_distributore_from_filename: PIva distributore from the filename.
 
     Returns:
         List of F2GRecord — one per <DatiPod> block.
-
-    Raises:
-        ValueError: If no <DatiPod> blocks are found (malformed file).
     """
-    # CodContrDisp is shared across all PODs in the file
-    codice_dp = (root.findtext("IdentificativiFlusso/CodContrDisp") or "").strip() or None
+    ident = root.find("IdentificativiFlusso")
+
+    codice_dp = _text(ident, "CodContrDisp")
+
+    # PIva values — try XML first, fall back to filename-parsed values
+    piva_utente = _text(ident, "PIvaUtente") or _text(ident, "PIVAUtente") or piva_utente_from_filename
+    piva_distributore = (
+        _text(ident, "PIvaDistributore")
+        or _text(ident, "PIVADistributore")
+        or piva_distributore_from_filename
+    )
 
     records: list[F2GRecord] = []
 
@@ -65,16 +92,25 @@ def parse_f2g_file(root: ET.Element, source_file: str) -> list[F2GRecord]:
             continue
 
         valid_from = _parse_italian_date(dati_pod.findtext("DataInizio"))
-        valid_to = _parse_italian_date(dati_pod.findtext("DataFine"))
+        valid_to   = _parse_italian_date(dati_pod.findtext("DataFine"))
 
         dati_pdp = dati_pod.find("DatiPdp")
-        tensione_raw = dati_pdp.findtext("Tensione") if dati_pdp is not None else None
-        trattamento = (dati_pdp.findtext("Trattamento") or "").strip() or None if dati_pdp is not None else None
+        tensione_raw = _text(dati_pdp, "Tensione")
+        trattamento  = _text(dati_pdp, "Trattamento")
+        codice_tariffa = _text(dati_pdp, "CodiceTariffa") or _text(dati_pdp, "CodTariffa")
+        tipo_misuratore = _text(dati_pdp, "TipoMisuratore") or _text(dati_pdp, "TipoMis")
+
+        # PuntoDispacciamento may be on each DatiPod or shared in IdentificativiFlusso
+        punto_disp = (
+            _text(dati_pod, "PuntoDispacciamento")
+            or _text(dati_pod, "CodContrDisp")
+            or _text(ident, "PuntoDispacciamento")
+        )
 
         tensione: int | None = None
         if tensione_raw:
             try:
-                tensione = int(tensione_raw.strip())
+                tensione = int(tensione_raw)
             except ValueError:
                 pass
 
@@ -85,6 +121,11 @@ def parse_f2g_file(root: ET.Element, source_file: str) -> list[F2GRecord]:
             trattamento=trattamento,
             valid_from=valid_from,
             valid_to=valid_to,
+            piva_utente=piva_utente,
+            piva_distributore=piva_distributore,
+            punto_dispacciamento=punto_disp,
+            tipo_misuratore=tipo_misuratore,
+            codice_tariffa=codice_tariffa,
             source_file=source_file,
         ))
 

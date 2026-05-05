@@ -17,14 +17,17 @@ from sqlalchemy import delete, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models.anagrafica import Anagrafica
 from backend.models.corrections import Correction
 from backend.models.files import FileLog
+from backend.models.forecast import ForecastPeriod
 from backend.models.measurements import (
     Measurement,
     MeasurementSecondary,
     MeasurementTotalizer,
 )
 from backend.models.pod_metadata import PodMetadata
+from backend.parser.anagrafica_parser import AnagraficaRecord
 from backend.parser.curve_parser import CurveRecord
 from backend.parser.f2g_parser import F2GRecord
 from backend.parser.totalizer_parser import TotalizerRecord
@@ -264,6 +267,11 @@ async def upsert_pod_metadata(
             "codice_dp": r.codice_dp,
             "tensione": r.tensione,
             "trattamento": r.trattamento,
+            "piva_utente": getattr(r, "piva_utente", None),
+            "piva_distributore": getattr(r, "piva_distributore", None),
+            "punto_dispacciamento": getattr(r, "punto_dispacciamento", None),
+            "tipo_misuratore": getattr(r, "tipo_misuratore", None),
+            "codice_tariffa": getattr(r, "codice_tariffa", None),
             "valid_from": r.valid_from,
             "valid_to": r.valid_to,
             "source_file": r.source_file,
@@ -280,8 +288,132 @@ async def upsert_pod_metadata(
                 "codice_dp": insert(table).excluded.codice_dp,
                 "tensione": insert(table).excluded.tensione,
                 "trattamento": insert(table).excluded.trattamento,
+                "piva_utente": insert(table).excluded.piva_utente,
+                "piva_distributore": insert(table).excluded.piva_distributore,
+                "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
+                "tipo_misuratore": insert(table).excluded.tipo_misuratore,
+                "codice_tariffa": insert(table).excluded.codice_tariffa,
                 "valid_to": insert(table).excluded.valid_to,
                 "source_file": insert(table).excluded.source_file,
+            },
+        )
+    )
+
+    result = await session.execute(stmt)
+    return result.rowcount
+
+
+# ── Anagrafica (master POD register) ──────────────────────────────────────────
+
+async def upsert_anagrafica(
+    session: AsyncSession,
+    records: list[AnagraficaRecord],
+    account_id: str,
+) -> int:
+    """
+    Upsert ANAGRAFICA records into the anagrafica table.
+
+    Conflict key: (account_id, pod, mese_anno).
+    On conflict, always update — a re-uploaded file is authoritative.
+    """
+    if not records:
+        return 0
+
+    table = Anagrafica.__table__
+
+    rows = [
+        {
+            "account_id": account_id,
+            "mese_anno": r.mese_anno,
+            "piva_utente": r.piva_utente,
+            "piva_distributore": r.piva_distributore,
+            "pod": r.pod,
+            "pod_raw": r.pod_raw,
+            "punto_dispacciamento": r.punto_dispacciamento,
+            "tipo_misuratore": r.tipo_misuratore,
+            "trattamento": r.trattamento,
+            "tensione": r.tensione,
+            "codice_tariffa": r.codice_tariffa,
+            "consumo_tot": r.consumo_tot,
+            "included": r.included,
+            "source_file": r.source_file,
+        }
+        for r in records
+    ]
+
+    stmt = (
+        insert(table)
+        .values(rows)
+        .on_conflict_do_update(
+            constraint="uq_anagrafica_key",
+            set_={
+                "piva_utente": insert(table).excluded.piva_utente,
+                "piva_distributore": insert(table).excluded.piva_distributore,
+                "pod_raw": insert(table).excluded.pod_raw,
+                "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
+                "tipo_misuratore": insert(table).excluded.tipo_misuratore,
+                "trattamento": insert(table).excluded.trattamento,
+                "tensione": insert(table).excluded.tensione,
+                "codice_tariffa": insert(table).excluded.codice_tariffa,
+                "consumo_tot": insert(table).excluded.consumo_tot,
+                "included": insert(table).excluded.included,
+                "source_file": insert(table).excluded.source_file,
+            },
+        )
+    )
+
+    result = await session.execute(stmt)
+    return result.rowcount
+
+
+# ── Forecast periods ───────────────────────────────────────────────────────────
+
+async def upsert_forecast_periods(
+    session: AsyncSession,
+    rows: list,  # list[ForecastRow] from engine — avoid circular import
+    account_id: str,
+) -> int:
+    """
+    Upsert generated forecast rows into forecast_periods.
+
+    Conflict key: (account_id, pod, forecast_date, periodo).
+    On conflict, always replace — re-running the engine overwrites prior results.
+    """
+    if not rows:
+        return 0
+
+    table = ForecastPeriod.__table__
+
+    values = [
+        {
+            "account_id": account_id,
+            "pod": r.pod,
+            "mese_anno": r.mese_anno,
+            "punto_dispacciamento": r.punto_dispacciamento,
+            "forecast_date": r.forecast_date,
+            "source_date": r.source_date,
+            "periodo": r.periodo,
+            "ea_mwh": r.ea_mwh,
+            "ea_mwh_with_loss": r.ea_mwh_with_loss,
+            "loss_pct": r.loss_pct,
+            "source_type": r.source_type,
+        }
+        for r in rows
+    ]
+
+    stmt = (
+        insert(table)
+        .values(values)
+        .on_conflict_do_update(
+            constraint="uq_forecast_period_key",
+            set_={
+                "mese_anno": insert(table).excluded.mese_anno,
+                "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
+                "source_date": insert(table).excluded.source_date,
+                "ea_mwh": insert(table).excluded.ea_mwh,
+                "ea_mwh_with_loss": insert(table).excluded.ea_mwh_with_loss,
+                "loss_pct": insert(table).excluded.loss_pct,
+                "source_type": insert(table).excluded.source_type,
             },
         )
     )
