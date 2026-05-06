@@ -73,31 +73,91 @@ async def _load_loss_rules(session: AsyncSession, account_id: str) -> list[LossR
     return rules if rules else DEFAULT_RULES
 
 
-async def _load_dispatching_weights(
+async def _load_pod_metadata_batch(
     session: AsyncSession,
     account_id: str,
-    punto_dispacciamento: str,
-) -> list[float] | None:
-    """
-    Return 96 period weights for a dispatching point, or None if not configured.
-    Account-specific rows take precedence over global (NULL account_id) rows.
-    """
+    pods: list[str],
+) -> dict[str, dict]:
+    """Load pod_metadata for all PODs in one query (latest record per pod)."""
+    if not pods:
+        return {}
     rows = await session.execute(text("""
-        SELECT periodo, pct
+        SELECT DISTINCT ON (pod) pod, tensione, codice_tariffa
+        FROM pod_metadata
+        WHERE account_id = :acct AND pod = ANY(:pods)
+        ORDER BY pod, valid_from DESC NULLS LAST
+    """), {"acct": account_id, "pods": pods})
+    return {r[0]: {"tensione": r[1], "codice_tariffa": r[2]} for r in rows.fetchall()}
+
+
+async def _load_dispatching_weights_batch(
+    session: AsyncSession,
+    account_id: str,
+    puntos: list[str],
+) -> dict[str, list[float] | None]:
+    """
+    Load dispatching weights for all relevant puntos in one query.
+    Account-specific rows take precedence over global (NULL account_id).
+    Returns {punto_dispacciamento: [96 weights] or None}.
+    """
+    if not puntos:
+        return {}
+    rows = await session.execute(text("""
+        SELECT punto_dispacciamento, periodo, pct
         FROM public.dispatching_config
         WHERE (account_id = :acct OR account_id IS NULL)
-          AND punto_dispacciamento = :pd
-        ORDER BY account_id NULLS LAST, periodo
-    """), {"acct": account_id, "pd": punto_dispacciamento})
-    # If both account-specific and global rows exist, account-specific come first.
-    # Build dict — first seen wins (account-specific beats global for the same periodo).
-    data: dict[int, float] = {}
+          AND punto_dispacciamento = ANY(:puntos)
+        ORDER BY account_id NULLS LAST, punto_dispacciamento, periodo
+    """), {"acct": account_id, "puntos": puntos})
+    by_punto: dict[str, dict[int, float]] = {}
     for r in rows.fetchall():
-        if r[0] not in data:
-            data[r[0]] = float(r[1])
-    if len(data) < 96:
-        return None
-    return [data.get(i, 0.0) for i in range(1, 97)]
+        pd, periodo, pct = r[0], r[1], float(r[2])
+        by_punto.setdefault(pd, {})
+        if periodo not in by_punto[pd]:  # first-seen wins: account-specific before global
+            by_punto[pd][periodo] = pct
+    return {
+        pd: ([data.get(i, 0.0) for i in range(1, 97)] if len(data) >= 96 else None)
+        for pd, data in by_punto.items()
+    }
+
+
+async def _load_source_daily_batch(
+    session: AsyncSession,
+    account_id: str,
+    pods: list[str],
+    source_mese_anno: str,
+) -> dict[str, dict[date, list[tuple[int, float | None, str]]]]:
+    """
+    Load source-month measurement data for ALL pods in 2 queries instead of 2×N.
+    Returns {pod: {date: [(periodo, ea_kwh, source_type), ...]}}
+    E preferred over S for any given (pod, date).
+    """
+    result: dict[str, dict[date, list[tuple[int, float | None, str]]]] = {p: {} for p in pods}
+    e_dates: dict[str, set[date]] = {p: set() for p in pods}
+
+    e_rows = await session.execute(text("""
+        SELECT pod, data_misura, periodo, ea_kwh
+        FROM measurements
+        WHERE account_id = :acct AND pod = ANY(:pods) AND mese_anno = :ma AND tipo_dato = 'E'
+        ORDER BY pod, data_misura, periodo
+    """), {"acct": account_id, "pods": pods, "ma": source_mese_anno})
+    for r in e_rows.fetchall():
+        pod, d, periodo, ea = r[0], r[1], r[2], r[3]
+        e_dates[pod].add(d)
+        result[pod].setdefault(d, []).append((periodo, float(ea) if ea is not None else None, "E"))
+
+    s_rows = await session.execute(text("""
+        SELECT pod, data_misura, periodo, ea_kwh
+        FROM measurements_secondary
+        WHERE account_id = :acct AND pod = ANY(:pods) AND mese_anno = :ma
+        ORDER BY pod, data_misura, periodo
+    """), {"acct": account_id, "pods": pods, "ma": source_mese_anno})
+    for r in s_rows.fetchall():
+        pod, d, periodo, ea = r[0], r[1], r[2], r[3]
+        if d not in e_dates[pod]:
+            result[pod].setdefault(d, []).append((periodo, float(ea) if ea is not None else None, "S"))
+
+    return result
 
 
 async def _load_anagrafica_pods(
@@ -124,66 +184,6 @@ async def _load_anagrafica_pods(
     ]
 
 
-async def _load_pod_meta(
-    session: AsyncSession,
-    account_id: str,
-    pod: str,
-) -> dict | None:
-    """Load pod_metadata for loss-rule lookup (tensione, codice_tariffa)."""
-    row = await session.execute(text("""
-        SELECT tensione, codice_tariffa
-        FROM pod_metadata
-        WHERE account_id = :acct AND pod = :pod
-        ORDER BY valid_from DESC NULLS LAST
-        LIMIT 1
-    """), {"acct": account_id, "pod": pod})
-    r = row.fetchone()
-    return {"tensione": r[0], "codice_tariffa": r[1]} if r else None
-
-
-async def _load_source_daily(
-    session: AsyncSession,
-    account_id: str,
-    pod: str,
-    source_mese_anno: str,
-) -> dict[date, list[tuple[int, float | None, str]]]:
-    """
-    Load all 96-period rows for a POD in the source month.
-    Returns {date: [(periodo, ea_kwh, source_type), ...]}
-    E preferred over S for any given day.
-    """
-    # Fetch E data
-    e_rows = await session.execute(text("""
-        SELECT data_misura, periodo, ea_kwh
-        FROM measurements
-        WHERE account_id = :acct AND pod = :pod AND mese_anno = :ma AND tipo_dato = 'E'
-        ORDER BY data_misura, periodo
-    """), {"acct": account_id, "pod": pod, "ma": source_mese_anno})
-
-    daily: dict[date, list[tuple[int, float | None, str]]] = {}
-    e_dates: set[date] = set()
-
-    for r in e_rows.fetchall():
-        d = r[0]
-        e_dates.add(d)
-        daily.setdefault(d, []).append((r[1], float(r[2]) if r[2] is not None else None, "E"))
-
-    # Fetch S data only for days without E
-    s_rows = await session.execute(text("""
-        SELECT data_misura, periodo, ea_kwh
-        FROM measurements_secondary
-        WHERE account_id = :acct AND pod = :pod AND mese_anno = :ma
-        ORDER BY data_misura, periodo
-    """), {"acct": account_id, "pod": pod, "ma": source_mese_anno})
-
-    for r in s_rows.fetchall():
-        d = r[0]
-        if d not in e_dates:
-            daily.setdefault(d, []).append((r[1], float(r[2]) if r[2] is not None else None, "S"))
-
-    return daily
-
-
 def _source_mese_anno(forecast_mese_anno: str) -> str:
     """Return the same month one year earlier: '05/2026' → '05/2025'."""
     mm, yyyy = forecast_mese_anno.split("/")
@@ -202,6 +202,10 @@ async def generate_forecast(
 
     Returns a list of ForecastRow (one per POD × 31 days × 96 periods).
     The caller is responsible for upserting into forecast_periods.
+
+    All supporting data is batch-loaded in a small fixed number of queries
+    (regardless of POD count) to avoid per-POD round-trips that would
+    exceed Render's 90-second request timeout.
     """
     source_month = _source_mese_anno(forecast_mese_anno)
     loss_rules   = await _load_loss_rules(session, account_id)
@@ -211,30 +215,31 @@ async def generate_forecast(
         log.warning("No ANAGRAFICA data for %s / %s — nothing to forecast", account_id, forecast_mese_anno)
         return []
 
+    pods   = [a["pod"] for a in ana_pods]
+    puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
+
+    # Batch-load all supporting data in 4 queries total (not 3×N)
+    pod_meta_map    = await _load_pod_metadata_batch(session, account_id, pods)
+    dispatch_map    = await _load_dispatching_weights_batch(session, account_id, puntos)
+    source_daily_map = await _load_source_daily_batch(session, account_id, pods, source_month)
+
     all_rows: list[ForecastRow] = []
 
     for ana in ana_pods:
-        pod           = ana["pod"]
-        punto         = ana["punto_dispacciamento"]
-        consumo_tot   = ana["consumo_tot"]
+        pod         = ana["pod"]
+        punto       = ana["punto_dispacciamento"]
+        consumo_tot = ana["consumo_tot"]
 
-        # Loss rule lookup: prefer pod_metadata, fall back to anagrafica fields
-        meta = await _load_pod_meta(session, account_id, pod)
+        meta           = pod_meta_map.get(pod)
         tensione       = (meta or {}).get("tensione") or ana.get("tensione")
         codice_tariffa = (meta or {}).get("codice_tariffa") or ana.get("codice_tariffa")
         pod_found      = meta is not None
 
         loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
 
-        # Dispatching weights for CONSUMO_TOT estimation
-        weights: list[float] | None = None
-        if punto:
-            weights = await _load_dispatching_weights(session, account_id, punto)
+        weights: list[float] | None = dispatch_map.get(punto) if punto else None
+        source_daily = source_daily_map.get(pod, {})
 
-        # Load previous-year source data
-        source_daily = await _load_source_daily(session, account_id, pod, source_month)
-
-        # Build 31-day × 96-period filled forecast
         filled: list[FilledPeriod] = build_forecast_month(
             forecast_mese_anno=forecast_mese_anno,
             source_daily=source_daily,
