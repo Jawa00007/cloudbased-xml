@@ -1,5 +1,5 @@
 import type {
-  Account, AnagraficaRecord, CompareOut, CorrectionSummary, DailyTotal, FileLog,
+  Account, AnagraficaRecord, CompareOut, CorrectionSummary, DailyTotal, DispatchingWeight, FileLog,
   ForecastGenerateResult, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
 } from './types'
@@ -148,6 +148,21 @@ export const updateLossRule = (id: number, body: Omit<LossRule, 'id'>) =>
 export const deleteLossRule = (id: number) =>
   del(`/admin/loss-config/${id}`)
 
+export const fetchDispatchingConfig = (account_id: string, punto_dispacciamento?: string) =>
+  get<DispatchingWeight[]>('/admin/dispatching-config', {
+    account_id, ...(punto_dispacciamento ? { punto_dispacciamento } : {}),
+  })
+
+export const setDispatchingWeights = (
+  account_id: string,
+  body: { punto_dispacciamento: string; weights: number[] },
+) => put<{ message: string; account_id: string; punto_dispacciamento: string; periods: number }>(
+  `/admin/dispatching-config?account_id=${encodeURIComponent(account_id)}`, body,
+)
+
+export const deleteDispatchingConfig = (account_id: string, punto_dispacciamento: string) =>
+  del(`/admin/dispatching-config?account_id=${encodeURIComponent(account_id)}&punto_dispacciamento=${encodeURIComponent(punto_dispacciamento)}`)
+
 export const fetchAnagrafica = (account_id: string, mese_anno: string) =>
   get<AnagraficaRecord[]>('/admin/anagrafica', { account_id, mese_anno })
 
@@ -158,3 +173,6 @@ export const uploadAnagrafica = (account_id: string, file: File) => {
     `/admin/anagrafica/upload?account_id=${encodeURIComponent(account_id)}`, form,
   )
 }
+
+export const deleteAnagrafica = (account_id: string, mese_anno: string) =>
+  del(`/admin/anagrafica?account_id=${encodeURIComponent(account_id)}&mese_anno=${encodeURIComponent(mese_anno)}`)

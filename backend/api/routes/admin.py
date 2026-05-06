@@ -88,6 +88,25 @@ async def list_anagrafica(
         return [AnagraficaOut.model_validate(dict(r._mapping)) for r in rows.fetchall()]
 
 
+@router.delete(
+    "/anagrafica",
+    response_model=None,
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete all ANAGRAFICA records for an account and month",
+)
+async def delete_anagrafica(
+    account_id: str,
+    mese_anno: str,
+    _: Auth,
+) -> None:
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        await session.execute(text("""
+            DELETE FROM anagrafica
+            WHERE account_id = :acct AND mese_anno = :ma
+        """), {"acct": account_id, "ma": mese_anno})
+
+
 # ── Loss config CRUD ──────────────────────────────────────────────────────────
 
 @router.get(

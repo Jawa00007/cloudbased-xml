@@ -48,31 +48,33 @@ class AnagraficaRecord:
 # ── Column name aliases (case-insensitive) ────────────────────────────────────
 
 _COL_ALIASES: dict[str, list[str]] = {
-    "piva_utente":          ["pivautente", "piva_utente", "partitaivautente", "piva utente"],
+    "piva_utente":          ["pivautente", "piva_utente", "partitaivautente", "piva utente", "piva"],
     "piva_distributore":    ["pivadistributore", "piva_distributore", "partitaivadistributore"],
     "pod":                  ["pod", "codicepod", "codice_pod"],
-    "punto_dispacciamento": ["puntodispacciamento", "punto_dispac", "puntodispacc", "dispatchingpoint"],
-    "tipo_misuratore":      ["tipomisuratore", "tipo_mis", "tipomis"],
-    "trattamento":          ["trattamento"],
+    "punto_dispacciamento": ["puntodispacciamento", "punto_dispac", "puntodispacc", "dispatchingpoint", "codice_dp"],
+    "tipo_misuratore":      ["tipomisuratore", "tipo_mis", "tipomis", "tipo_misuratore"],
+    "trattamento":          ["trattamento", "trattamento_03"],
     "tensione":             ["tensione"],
     "codice_tariffa":       ["codicetariffa", "codice_tariffa", "cod_tariffa", "codtariffa"],
     "consumo_tot":          ["consumo_tot", "consumotot", "consumo tot", "annualkwh"],
-    "filter_col":           ["f", "filtro", "filter", "includi", "flag"],
+    # trattamento_04 = Excel column F = the filter column in E-Distribuzione files
+    "filter_col":           ["f", "filtro", "filter", "includi", "flag", "trattamento_04"],
 }
 
-# Positional fallback (0-based column indices) — adjust to match your CSV layout
-# Column F in Excel = index 5
+# Positional fallback (0-based column indices) for when header names are not recognised.
+# Matches the E-Distribuzione ANAGRAFICA CSV layout:
+#   0=POD, 1=CF, 2=PIVA, 3=Tipo_Misuratore, 4=Trattamento_03, 5=Trattamento_04, 6+=CRPP…
 _COL_INDEX_FALLBACK: dict[str, int] = {
-    "piva_utente":          0,
-    "piva_distributore":    1,
-    "pod":                  3,
-    "punto_dispacciamento": 6,
-    "tipo_misuratore":      7,
-    "trattamento":          8,
-    "tensione":             9,
-    "codice_tariffa":       10,
-    "consumo_tot":          11,
-    "filter_col":           5,     # Column F = index 5
+    "piva_utente":          2,
+    "piva_distributore":    -1,   # not present — will return None safely
+    "pod":                  0,
+    "punto_dispacciamento": -1,   # not present — taken from filename
+    "tipo_misuratore":      3,
+    "trattamento":          4,
+    "tensione":             -1,
+    "codice_tariffa":       -1,
+    "consumo_tot":          -1,   # found by name; positional varies with CRPP column count
+    "filter_col":           5,    # Trattamento_04 = Excel column F
 }
 
 
@@ -145,10 +147,35 @@ def _safe_float(value: str | None) -> float | None:
 
 
 def _cell(row: list[str], idx: int | None) -> str | None:
-    if idx is None or idx >= len(row):
+    if idx is None or idx is not None and idx < 0:
+        return None
+    if idx >= len(row):
         return None
     v = row[idx].strip()
     return v or None
+
+
+_YYMM_RE = re.compile(r"^(\d{2})(\d{2})$")
+
+
+def _extract_mese_anno_from_metadata(row: list[str]) -> str | None:
+    """
+    E-Distribuzione files have a metadata first line like:
+      E-DISTRIBUZIONE S.P.A.;CALA;DP2788;2604;05779711000
+    Index 3 is a YYMM code: '2604' → YY=26, MM=04 → '04/2026'.
+    """
+    for cell in row:
+        m = _YYMM_RE.match(cell.strip())
+        if m:
+            yy, mm = int(m.group(1)), int(m.group(2))
+            if 1 <= mm <= 12:
+                return f"{mm:02d}/{2000 + yy}"
+    return None
+
+
+def _is_header_row(row: list[str]) -> bool:
+    """Return True if this row contains 'POD' as a column header."""
+    return any(c.strip().upper() == "POD" for c in row)
 
 
 def _parse_csv_rows(
@@ -156,17 +183,25 @@ def _parse_csv_rows(
     mese_anno: str,
     source_file: str,
     piva_utente_from_filename: str | None = None,
+    punto_dispacciamento_from_filename: str | None = None,
 ) -> list[AnagraficaRecord]:
     records: list[AnagraficaRecord] = []
     col_map: dict[str, int | None] | None = None
+    resolved_mese_anno = mese_anno
 
-    for i, row in enumerate(reader):
+    for row in reader:
         if not row:
             continue
 
-        # First non-empty row → detect headers
         if col_map is None:
-            col_map = _resolve_columns(row)
+            # Keep scanning until we find the real header row (contains "POD")
+            if _is_header_row(row):
+                col_map = _resolve_columns(row)
+            else:
+                # Try to extract mese_anno from metadata lines (e.g. YYMM code)
+                found = _extract_mese_anno_from_metadata(row)
+                if found:
+                    resolved_mese_anno = found
             continue
 
         # Filter: only include rows where filter_col = "O"
@@ -182,7 +217,7 @@ def _parse_csv_rows(
 
         piva_utente = _cell(row, col_map["piva_utente"]) or piva_utente_from_filename
         piva_dist   = _cell(row, col_map["piva_distributore"])
-        punto       = _cell(row, col_map["punto_dispacciamento"])
+        punto       = _cell(row, col_map["punto_dispacciamento"]) or punto_dispacciamento_from_filename
         tipo_mis    = _cell(row, col_map["tipo_misuratore"])
         trattamento = _cell(row, col_map["trattamento"])
         tensione    = _safe_int(_cell(row, col_map["tensione"]))
@@ -202,7 +237,7 @@ def _parse_csv_rows(
             codice_tariffa=cod_tar,
             consumo_tot=consumo_tot,
             included=True,
-            mese_anno=mese_anno,
+            mese_anno=resolved_mese_anno,
             source_file=source_file,
         ))
 
@@ -228,6 +263,7 @@ def parse_anagrafica_bytes(
     meta = parse_anagrafica_filename(filename)
     mese_anno = meta["mese_anno"]
     piva_utente_fn = meta["piva_utente"] or None
+    punto_fn = meta["punto_dispacciamento"] or None
 
     all_records: list[AnagraficaRecord] = []
 
@@ -240,20 +276,20 @@ def parse_anagrafica_bytes(
                     raw = zf.read(csv_name).decode("utf-8-sig", errors="replace")
                     reader = csv.reader(io.StringIO(raw), delimiter=";")
                     all_records.extend(
-                        _parse_csv_rows(reader, mese_anno, csv_name, piva_utente_fn)
+                        _parse_csv_rows(reader, mese_anno, csv_name, piva_utente_fn, punto_fn)
                     )
         except zipfile.BadZipFile:
             # Treat as raw CSV
             raw = data.decode("utf-8-sig", errors="replace")
             reader = csv.reader(io.StringIO(raw), delimiter=";")
             all_records.extend(
-                _parse_csv_rows(reader, mese_anno, filename, piva_utente_fn)
+                _parse_csv_rows(reader, mese_anno, filename, piva_utente_fn, punto_fn)
             )
     else:
         raw = data.decode("utf-8-sig", errors="replace")
         reader = csv.reader(io.StringIO(raw), delimiter=";")
         all_records.extend(
-            _parse_csv_rows(reader, mese_anno, filename, piva_utente_fn)
+            _parse_csv_rows(reader, mese_anno, filename, piva_utente_fn, punto_fn)
         )
 
     return all_records
