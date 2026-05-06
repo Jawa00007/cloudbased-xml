@@ -4,7 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
-  fetchAccounts, fetchLossConfig, createLossRule, deleteLossRule,
+  fetchAccounts, fetchLossConfig, createLossRule, updateLossRule, deleteLossRule,
   fetchAnagrafica, uploadAnagrafica, deleteAnagrafica,
   fetchDispatchingConfig, setDispatchingWeights, deleteDispatchingConfig,
 } from '../api/client'
@@ -24,7 +24,9 @@ const EMPTY_RULE = {
 }
 
 // ── Loss Rule Row ──────────────────────────────────────────────────────────────
-function LossRuleRow({ rule, onDelete }: { rule: LossRule; onDelete: () => void }) {
+function LossRuleRow({
+  rule, onDelete, onEdit,
+}: { rule: LossRule; onDelete: () => void; onEdit: () => void }) {
   return (
     <tr className="border-b border-slate-50 hover:bg-slate-50 transition-colors group">
       <td className="px-5 py-3 text-xs font-medium text-slate-800">{rule.name}</td>
@@ -36,12 +38,10 @@ function LossRuleRow({ rule, onDelete }: { rule: LossRule; onDelete: () => void 
       <td className="px-4 py-3 text-xs tabular-nums text-right text-slate-500">{rule.priority}</td>
       <td className="px-4 py-3 text-xs text-slate-400 truncate max-w-[180px]">{rule.description ?? '—'}</td>
       <td className="px-4 py-3 text-right">
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-all"
-        >
-          Delete
-        </button>
+        <div className="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-all">
+          <button onClick={onEdit} className="text-xs text-blue-500 hover:text-blue-700">Edit</button>
+          <button onClick={onDelete} className="text-xs text-red-400 hover:text-red-600">Delete</button>
+        </div>
       </td>
     </tr>
   )
@@ -55,8 +55,9 @@ export default function AdminPage() {
   const [meseAnno, setMeseAnno] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Add-rule form
+  // Add/edit rule form
   const [showAddForm, setShowAddForm] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState({ ...EMPTY_RULE })
 
   // Dispatching config
@@ -108,19 +109,42 @@ export default function AdminPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['loss-config'] }),
   })
 
+  function closeForm() {
+    setShowAddForm(false)
+    setEditingId(null)
+    setForm({ ...EMPTY_RULE })
+  }
+
+  function startEdit(rule: LossRule) {
+    setForm({
+      name: rule.name,
+      condition_type: rule.condition_type,
+      condition_value: rule.condition_value ?? '',
+      loss_pct: +(rule.loss_pct * 100).toFixed(4),
+      priority: rule.priority,
+      description: rule.description ?? '',
+      account_id: rule.account_id ?? '',
+    })
+    setEditingId(rule.id)
+    setShowAddForm(true)
+  }
+
+  const ruleBody = () => ({
+    ...form,
+    loss_pct: form.loss_pct / 100,
+    condition_value: form.condition_value || null,
+    account_id: form.account_id || null,
+    description: form.description || null,
+  } as Omit<LossRule, 'id'>)
+
   const addRule = useMutation({
-    mutationFn: () => createLossRule({
-      ...form,
-      loss_pct: form.loss_pct / 100,
-      condition_value: form.condition_value || null,
-      account_id: form.account_id || null,
-      description: form.description || null,
-    } as Omit<LossRule, 'id'>),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['loss-config'] })
-      setShowAddForm(false)
-      setForm({ ...EMPTY_RULE })
-    },
+    mutationFn: () => createLossRule(ruleBody()),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['loss-config'] }); closeForm() },
+  })
+
+  const editRule = useMutation({
+    mutationFn: () => updateLossRule(editingId!, ruleBody()),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['loss-config'] }); closeForm() },
   })
 
   const delAna = useMutation({
@@ -249,7 +273,7 @@ export default function AdminPage() {
               <p className="text-xs text-slate-400 mt-0.5">Rules evaluated in priority order. First match wins.</p>
             </div>
             <button
-              onClick={() => setShowAddForm(v => !v)}
+              onClick={() => showAddForm ? closeForm() : setShowAddForm(true)}
               className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -262,7 +286,9 @@ export default function AdminPage() {
           {/* Inline add-rule form */}
           {showAddForm && (
             <div className="px-5 py-4 bg-blue-50 border-b border-blue-100">
-              <p className="text-xs font-semibold text-blue-700 mb-3">New Loss Rule</p>
+              <p className="text-xs font-semibold text-blue-700 mb-3">
+                {editingId ? `Edit Rule — ${form.name || '…'}` : 'New Loss Rule'}
+              </p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 <div className="flex flex-col gap-1">
                   <label className="text-[10px] font-medium text-slate-500 uppercase tracking-wide">Name</label>
@@ -315,14 +341,16 @@ export default function AdminPage() {
               </div>
               <div className="flex items-center gap-2 mt-3">
                 <button
-                  onClick={() => addRule.mutate()}
-                  disabled={!form.name || addRule.isPending}
+                  onClick={() => editingId ? editRule.mutate() : addRule.mutate()}
+                  disabled={!form.name || addRule.isPending || editRule.isPending}
                   className="px-4 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
                 >
-                  {addRule.isPending ? 'Saving…' : 'Save Rule'}
+                  {(addRule.isPending || editRule.isPending) ? 'Saving…' : editingId ? 'Update Rule' : 'Save Rule'}
                 </button>
-                {addRule.isError && (
-                  <span className="text-xs text-red-600">{(addRule.error as Error).message}</span>
+                {(addRule.isError || editRule.isError) && (
+                  <span className="text-xs text-red-600">
+                    {((addRule.error || editRule.error) as Error).message}
+                  </span>
                 )}
               </div>
             </div>
@@ -346,7 +374,12 @@ export default function AdminPage() {
                 </thead>
                 <tbody>
                   {lossRules.map(rule => (
-                    <LossRuleRow key={rule.id} rule={rule} onDelete={() => deleteRule.mutate(rule.id)} />
+                    <LossRuleRow
+                      key={rule.id}
+                      rule={rule}
+                      onEdit={() => startEdit(rule)}
+                      onDelete={() => deleteRule.mutate(rule.id)}
+                    />
                   ))}
                   {lossRules.length === 0 && (
                     <tr>
