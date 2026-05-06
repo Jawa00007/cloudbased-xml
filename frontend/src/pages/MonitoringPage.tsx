@@ -21,19 +21,19 @@ export default function MonitoringPage() {
   const missing = useQuery({
     queryKey: ['missing', account, meseAnno],
     queryFn: () => fetchMissingPeriods(account, meseAnno),
-    enabled: !!account && tab === 'missing',
+    enabled: !!account,
   })
 
   const corrections = useQuery({
     queryKey: ['corrections', account, meseAnno],
     queryFn: () => fetchCorrections(account, meseAnno),
-    enabled: !!account && tab === 'corrections',
+    enabled: !!account,
   })
 
   const errors = useQuery({
     queryKey: ['files-errors', account],
     queryFn: () => fetchFiles(account, 'error', 500),
-    enabled: !!account && tab === 'errors',
+    enabled: !!account,
   })
 
   const toIM   = (m: string) => `${m.slice(3)}-${m.slice(0,2)}`
