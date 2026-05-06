@@ -126,6 +126,14 @@ export interface LossRule {
   description: string | null
 }
 
+export interface DispatchingWeight {
+  id: number
+  account_id: string | null   // null = global (all accounts)
+  punto_dispacciamento: string
+  periodo: number
+  pct: number
+}
+
 export interface AnagraficaRecord {
   pod: string
   mese_anno: string

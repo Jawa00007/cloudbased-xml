@@ -235,7 +235,7 @@ class LossRuleIn(BaseModel):
 class DispatchingWeightOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    account_id: str
+    account_id: str | None       # None = global (applies to all accounts)
     punto_dispacciamento: str
     periodo: int
     pct: float

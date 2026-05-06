@@ -9,6 +9,7 @@ import {
   fetchDispatchingConfig, setDispatchingWeights, deleteDispatchingConfig,
 } from '../api/client'
 import type { LossRule } from '../api/types'
+import { itNum, itKwh } from '../utils/format'
 
 const COND_LABELS: Record<string, string> = {
   missing_pod: 'Missing POD',
@@ -30,7 +31,7 @@ function LossRuleRow({ rule, onDelete }: { rule: LossRule; onDelete: () => void 
       <td className="px-4 py-3 text-xs text-slate-600">{COND_LABELS[rule.condition_type] ?? rule.condition_type}</td>
       <td className="px-4 py-3 text-xs text-slate-500 font-mono">{rule.condition_value ?? '—'}</td>
       <td className="px-4 py-3 text-xs tabular-nums text-right font-semibold text-slate-800">
-        {(rule.loss_pct * 100).toFixed(2)}%
+        {itNum(rule.loss_pct * 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%
       </td>
       <td className="px-4 py-3 text-xs tabular-nums text-right text-slate-500">{rule.priority}</td>
       <td className="px-4 py-3 text-xs text-slate-400 truncate max-w-[180px]">{rule.description ?? '—'}</td>
@@ -83,10 +84,13 @@ export default function AdminPage() {
     enabled: !!accountId && !!meseAnno,
   })
 
+  // null = global scope; non-empty string = account-specific
+  const dispScope = accountId || null
+
   const { data: dispWeights = [], isLoading: loadingDisp } = useQuery({
-    queryKey: ['dispatching-config', accountId, dispPoint],
-    queryFn: () => fetchDispatchingConfig(accountId, dispPoint || undefined),
-    enabled: !!accountId && tab === 'dispatching',
+    queryKey: ['dispatching-config', dispScope, dispPoint],
+    queryFn: () => fetchDispatchingConfig(dispScope, dispPoint || undefined),
+    enabled: tab === 'dispatching',
   })
 
   // Distinct dispatching points from loaded weights
@@ -151,18 +155,18 @@ export default function AdminPage() {
 
   const saveWeights = useMutation({
     mutationFn: (weights: number[]) =>
-      setDispatchingWeights(accountId, { punto_dispacciamento: dispPoint || dispPointDraft, weights }),
+      setDispatchingWeights(dispScope, { punto_dispacciamento: dispPoint || dispPointDraft, weights }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dispatching-config', accountId] })
+      qc.invalidateQueries({ queryKey: ['dispatching-config', dispScope] })
       setDispInput('')
       if (dispPointDraft && !dispPoint) setDispPoint(dispPointDraft)
     },
   })
 
   const delWeights = useMutation({
-    mutationFn: (pd: string) => deleteDispatchingConfig(accountId, pd),
+    mutationFn: (pd: string) => deleteDispatchingConfig(dispScope, pd),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dispatching-config', accountId] })
+      qc.invalidateQueries({ queryKey: ['dispatching-config', dispScope] })
       setDispPoint('')
     },
   })
@@ -488,7 +492,7 @@ export default function AdminPage() {
                           <td className="px-4 py-2.5 text-slate-600">{r.punto_dispacciamento ?? '—'}</td>
                           <td className="px-4 py-2.5 text-slate-600">{r.trattamento ?? '—'}</td>
                           <td className="px-4 py-2.5 tabular-nums text-right font-medium text-slate-800">
-                            {r.consumo_tot != null ? r.consumo_tot.toLocaleString() : '—'}
+                            {itKwh(r.consumo_tot)}
                           </td>
                         </tr>
                       ))
@@ -504,18 +508,21 @@ export default function AdminPage() {
       {/* ── Dispatching Weights tab ── */}
       {tab === 'dispatching' && (
         <div className="space-y-4">
-          {!accountId ? (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-10 text-center">
-              <p className="text-slate-400 text-sm">Select an account above to manage distribution weights.</p>
-            </div>
-          ) : (
-            <>
+          <>
               {/* Dispatching point selector */}
               <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
-                <h2 className="text-sm font-semibold text-slate-700 mb-1">Dispatching Point Weights</h2>
+                <div className="flex items-start justify-between mb-1">
+                  <h2 className="text-sm font-semibold text-slate-700">Dispatching Point Weights</h2>
+                  <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
+                    dispScope ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {dispScope ? `Account: ${dispScope}` : 'Global (all accounts)'}
+                  </span>
+                </div>
                 <p className="text-xs text-slate-400 mb-4">
-                  96 per-period percentage weights used when no historical data exists (Case 3 estimation).
-                  All 96 weights must sum to 1.0.
+                  96 per-period weights used when no historical data exists (Case 3 estimation).
+                  All 96 weights must sum to 1.0. Global weights apply to all accounts unless
+                  an account-specific override exists.
                 </p>
 
                 {loadingDisp ? (
@@ -641,7 +648,6 @@ export default function AdminPage() {
                 </div>
               </div>
             </>
-          )}
         </div>
       )}
     </div>

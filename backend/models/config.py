@@ -55,7 +55,7 @@ class DispatchingConfig(Base):
     __table_args__ = {"schema": "public"}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    account_id: Mapped[str] = mapped_column(Text, nullable=False)
+    account_id: Mapped[str | None] = mapped_column(Text, nullable=True)   # NULL = global
     punto_dispacciamento: Mapped[str] = mapped_column(Text, nullable=False)
     periodo: Mapped[int] = mapped_column(Integer, nullable=False)   # 1–96
     pct: Mapped[float] = mapped_column(Numeric(10, 8), nullable=False)

@@ -148,20 +148,21 @@ export const updateLossRule = (id: number, body: Omit<LossRule, 'id'>) =>
 export const deleteLossRule = (id: number) =>
   del(`/admin/loss-config/${id}`)
 
-export const fetchDispatchingConfig = (account_id: string, punto_dispacciamento?: string) =>
+export const fetchDispatchingConfig = (account_id?: string | null, punto_dispacciamento?: string) =>
   get<DispatchingWeight[]>('/admin/dispatching-config', {
-    account_id, ...(punto_dispacciamento ? { punto_dispacciamento } : {}),
+    ...(account_id ? { account_id } : {}),
+    ...(punto_dispacciamento ? { punto_dispacciamento } : {}),
   })
 
 export const setDispatchingWeights = (
-  account_id: string,
+  account_id: string | null,
   body: { punto_dispacciamento: string; weights: number[] },
-) => put<{ message: string; account_id: string; punto_dispacciamento: string; periods: number }>(
-  `/admin/dispatching-config?account_id=${encodeURIComponent(account_id)}`, body,
+) => put<{ message: string; account_id: string | null; punto_dispacciamento: string; periods: number }>(
+  `/admin/dispatching-config${account_id ? `?account_id=${encodeURIComponent(account_id)}` : ''}`, body,
 )
 
-export const deleteDispatchingConfig = (account_id: string, punto_dispacciamento: string) =>
-  del(`/admin/dispatching-config?account_id=${encodeURIComponent(account_id)}&punto_dispacciamento=${encodeURIComponent(punto_dispacciamento)}`)
+export const deleteDispatchingConfig = (account_id: string | null, punto_dispacciamento: string) =>
+  del(`/admin/dispatching-config?${account_id ? `account_id=${encodeURIComponent(account_id)}&` : ''}punto_dispacciamento=${encodeURIComponent(punto_dispacciamento)}`)
 
 export const fetchAnagrafica = (account_id: string, mese_anno: string) =>
   get<AnagraficaRecord[]>('/admin/anagrafica', { account_id, mese_anno })

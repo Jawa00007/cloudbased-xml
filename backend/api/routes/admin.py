@@ -227,40 +227,57 @@ async def delete_loss_rule(
 @router.get(
     "/dispatching-config",
     response_model=list[DispatchingWeightOut],
-    summary="List dispatching weights for an account",
+    summary="List dispatching weights — global (no account_id) or per-account",
 )
 async def list_dispatching_config(
-    account_id: str,
     _: Auth,
+    account_id: str | None = None,
     punto_dispacciamento: str | None = None,
 ) -> list[DispatchingWeightOut]:
     async with get_public_session() as session:
-        if punto_dispacciamento:
-            rows = await session.execute(text("""
-                SELECT id, account_id, punto_dispacciamento, periodo, pct
-                FROM dispatching_config
-                WHERE account_id = :acct AND punto_dispacciamento = :pd
-                ORDER BY periodo
-            """), {"acct": account_id, "pd": punto_dispacciamento})
+        if account_id is not None:
+            if punto_dispacciamento:
+                rows = await session.execute(text("""
+                    SELECT id, account_id, punto_dispacciamento, periodo, pct
+                    FROM dispatching_config
+                    WHERE account_id = :acct AND punto_dispacciamento = :pd
+                    ORDER BY periodo
+                """), {"acct": account_id, "pd": punto_dispacciamento})
+            else:
+                rows = await session.execute(text("""
+                    SELECT id, account_id, punto_dispacciamento, periodo, pct
+                    FROM dispatching_config
+                    WHERE account_id = :acct
+                    ORDER BY punto_dispacciamento, periodo
+                """), {"acct": account_id})
         else:
-            rows = await session.execute(text("""
-                SELECT id, account_id, punto_dispacciamento, periodo, pct
-                FROM dispatching_config
-                WHERE account_id = :acct
-                ORDER BY punto_dispacciamento, periodo
-            """), {"acct": account_id})
+            # Global weights (account_id IS NULL)
+            if punto_dispacciamento:
+                rows = await session.execute(text("""
+                    SELECT id, account_id, punto_dispacciamento, periodo, pct
+                    FROM dispatching_config
+                    WHERE account_id IS NULL AND punto_dispacciamento = :pd
+                    ORDER BY periodo
+                """), {"pd": punto_dispacciamento})
+            else:
+                rows = await session.execute(text("""
+                    SELECT id, account_id, punto_dispacciamento, periodo, pct
+                    FROM dispatching_config
+                    WHERE account_id IS NULL
+                    ORDER BY punto_dispacciamento, periodo
+                """))
         return [DispatchingWeightOut.model_validate(dict(r._mapping)) for r in rows.fetchall()]
 
 
 @router.put(
     "/dispatching-config",
     response_model=dict,
-    summary="Set all 96 period weights for a dispatching point (replaces existing)",
+    summary="Set 96 period weights for a dispatching point (global or per-account)",
 )
 async def set_dispatching_weights(
-    account_id: str,
     body: DispatchingWeightIn,
     _: Auth,
+    account_id: str | None = None,
 ) -> dict:
     if len(body.weights) != 96:
         raise HTTPException(
@@ -276,14 +293,20 @@ async def set_dispatching_weights(
 
     table = DispatchingConfig.__table__
     async with get_public_session() as session:
-        await session.execute(text("""
-            DELETE FROM dispatching_config
-            WHERE account_id = :acct AND punto_dispacciamento = :pd
-        """), {"acct": account_id, "pd": body.punto_dispacciamento})
+        if account_id is not None:
+            await session.execute(text("""
+                DELETE FROM dispatching_config
+                WHERE account_id = :acct AND punto_dispacciamento = :pd
+            """), {"acct": account_id, "pd": body.punto_dispacciamento})
+        else:
+            await session.execute(text("""
+                DELETE FROM dispatching_config
+                WHERE account_id IS NULL AND punto_dispacciamento = :pd
+            """), {"pd": body.punto_dispacciamento})
 
         rows = [
             {
-                "account_id": account_id,
+                "account_id": account_id,  # None = global
                 "punto_dispacciamento": body.punto_dispacciamento,
                 "periodo": i + 1,
                 "pct": body.weights[i],
@@ -304,15 +327,21 @@ async def set_dispatching_weights(
     "/dispatching-config",
     response_model=None,
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete dispatching weights for an account + dispatching point",
+    summary="Delete dispatching weights (global or per-account)",
 )
 async def delete_dispatching_config(
-    account_id: str,
     punto_dispacciamento: str,
     _: Auth,
+    account_id: str | None = None,
 ) -> None:
     async with get_public_session() as session:
-        await session.execute(text("""
-            DELETE FROM dispatching_config
-            WHERE account_id = :acct AND punto_dispacciamento = :pd
-        """), {"acct": account_id, "pd": punto_dispacciamento})
+        if account_id is not None:
+            await session.execute(text("""
+                DELETE FROM dispatching_config
+                WHERE account_id = :acct AND punto_dispacciamento = :pd
+            """), {"acct": account_id, "pd": punto_dispacciamento})
+        else:
+            await session.execute(text("""
+                DELETE FROM dispatching_config
+                WHERE account_id IS NULL AND punto_dispacciamento = :pd
+            """), {"pd": punto_dispacciamento})
