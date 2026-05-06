@@ -368,6 +368,9 @@ async def upsert_anagrafica(
 
 # ── Forecast periods ───────────────────────────────────────────────────────────
 
+_FORECAST_CHUNK = 500  # rows per INSERT — keeps Render free tier within memory limits
+
+
 async def upsert_forecast_periods(
     session: AsyncSession,
     rows: list,  # list[ForecastRow] from engine — avoid circular import
@@ -378,6 +381,8 @@ async def upsert_forecast_periods(
 
     Conflict key: (account_id, pod, forecast_date, periodo).
     On conflict, always replace — re-running the engine overwrites prior results.
+
+    Inserts in chunks of _FORECAST_CHUNK to avoid OOM on memory-constrained hosts.
     """
     if not rows:
         return 0
@@ -401,25 +406,29 @@ async def upsert_forecast_periods(
         for r in rows
     ]
 
-    stmt = (
-        insert(table)
-        .values(values)
-        .on_conflict_do_update(
-            constraint="uq_forecast_period_key",
-            set_={
-                "mese_anno": insert(table).excluded.mese_anno,
-                "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
-                "source_date": insert(table).excluded.source_date,
-                "ea_mwh": insert(table).excluded.ea_mwh,
-                "ea_mwh_with_loss": insert(table).excluded.ea_mwh_with_loss,
-                "loss_pct": insert(table).excluded.loss_pct,
-                "source_type": insert(table).excluded.source_type,
-            },
+    total = 0
+    for i in range(0, len(values), _FORECAST_CHUNK):
+        chunk = values[i : i + _FORECAST_CHUNK]
+        stmt = (
+            insert(table)
+            .values(chunk)
+            .on_conflict_do_update(
+                constraint="uq_forecast_period_key",
+                set_={
+                    "mese_anno": insert(table).excluded.mese_anno,
+                    "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
+                    "source_date": insert(table).excluded.source_date,
+                    "ea_mwh": insert(table).excluded.ea_mwh,
+                    "ea_mwh_with_loss": insert(table).excluded.ea_mwh_with_loss,
+                    "loss_pct": insert(table).excluded.loss_pct,
+                    "source_type": insert(table).excluded.source_type,
+                },
+            )
         )
-    )
+        await session.execute(stmt)
+        total += len(chunk)
 
-    result = await session.execute(stmt)
-    return result.rowcount
+    return total
 
 
 # ── File log ───────────────────────────────────────────────────────────────────

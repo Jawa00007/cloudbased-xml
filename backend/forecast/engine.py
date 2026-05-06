@@ -78,14 +78,23 @@ async def _load_dispatching_weights(
     account_id: str,
     punto_dispacciamento: str,
 ) -> list[float] | None:
-    """Return 96 period weights for a dispatching point, or None if not configured."""
+    """
+    Return 96 period weights for a dispatching point, or None if not configured.
+    Account-specific rows take precedence over global (NULL account_id) rows.
+    """
     rows = await session.execute(text("""
         SELECT periodo, pct
         FROM public.dispatching_config
-        WHERE account_id = :acct AND punto_dispacciamento = :pd
-        ORDER BY periodo
+        WHERE (account_id = :acct OR account_id IS NULL)
+          AND punto_dispacciamento = :pd
+        ORDER BY account_id NULLS LAST, periodo
     """), {"acct": account_id, "pd": punto_dispacciamento})
-    data = {r[0]: float(r[1]) for r in rows.fetchall()}
+    # If both account-specific and global rows exist, account-specific come first.
+    # Build dict — first seen wins (account-specific beats global for the same periodo).
+    data: dict[int, float] = {}
+    for r in rows.fetchall():
+        if r[0] not in data:
+            data[r[0]] = float(r[1])
     if len(data) < 96:
         return None
     return [data.get(i, 0.0) for i in range(1, 97)]
