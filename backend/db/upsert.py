@@ -362,8 +362,8 @@ async def upsert_anagrafica(
         )
     )
 
-    result = await session.execute(stmt)
-    return result.rowcount
+    await session.execute(stmt)
+    return len(records)   # rowcount is unreliable for batch ON CONFLICT upserts
 
 
 # ── Forecast periods ───────────────────────────────────────────────────────────

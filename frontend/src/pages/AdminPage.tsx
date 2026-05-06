@@ -51,8 +51,8 @@ function LossRuleRow({
 export default function AdminPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'loss' | 'anagrafica' | 'dispatching'>('loss')
-  const [accountId, setAccountId] = useState('')
-  const [meseAnno, setMeseAnno] = useState('')
+  const [accountId, setAccountId] = useState(() => sessionStorage.getItem('admin_account') ?? '')
+  const [meseAnno, setMeseAnno] = useState(() => sessionStorage.getItem('admin_mese_anno') ?? '')
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Add/edit rule form
@@ -235,7 +235,7 @@ export default function AdminPage() {
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account</label>
             <select
               value={accountId}
-              onChange={e => setAccountId(e.target.value)}
+              onChange={e => { setAccountId(e.target.value); sessionStorage.setItem('admin_account', e.target.value) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px]"
             >
               <option value="">All accounts (global rules)</option>
@@ -459,7 +459,7 @@ export default function AdminPage() {
             <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-end gap-3">
               <div className="flex flex-col gap-1">
                 <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Month</label>
-                <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setConfirmDelete(false) }}
+                <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); sessionStorage.setItem('admin_mese_anno', e.target.value); setConfirmDelete(false) }}
                   className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[130px]">
                   <option value="">Select…</option>
                   {monthOptions().map(m => <option key={m} value={m}>{m}</option>)}
