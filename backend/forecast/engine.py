@@ -78,16 +78,17 @@ async def _load_pod_metadata_batch(
     account_id: str,
     pods: list[str],
 ) -> dict[str, dict]:
-    """Load pod_metadata for all PODs in one query (latest record per pod)."""
+    """Load pod_metadata tensione for all PODs in one query (latest record per pod).
+    codice_tariffa is not in pod_metadata — it comes from anagrafica instead."""
     if not pods:
         return {}
     rows = await session.execute(text("""
-        SELECT DISTINCT ON (pod) pod, tensione, codice_tariffa
+        SELECT DISTINCT ON (pod) pod, tensione
         FROM pod_metadata
         WHERE account_id = :acct AND pod = ANY(:pods)
         ORDER BY pod, valid_from DESC NULLS LAST
     """), {"acct": account_id, "pods": pods})
-    return {r[0]: {"tensione": r[1], "codice_tariffa": r[2]} for r in rows.fetchall()}
+    return {r[0]: {"tensione": r[1], "codice_tariffa": None} for r in rows.fetchall()}
 
 
 async def _load_dispatching_weights_batch(
