@@ -168,7 +168,8 @@ class AnagraficaUploadOut(BaseModel):
 
 class ForecastGenerateIn(BaseModel):
     account_id: str
-    mese_anno: str  # MM/YYYY
+    mese_anno: str                          # forecast target month MM/YYYY
+    anagrafica_mese_anno: str | None = None # which registry to use; defaults to mese_anno
 
 
 class ForecastPeriodOut(BaseModel):

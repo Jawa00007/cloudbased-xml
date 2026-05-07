@@ -124,8 +124,18 @@ export const fetchCorrections = (account: string, mese_anno?: string) =>
 
 // ── Forecast ──────────────────────────────────────────────────────────────────
 
-export const generateForecast = (account_id: string, mese_anno: string) =>
-  post<ForecastGenerateResult>('/forecast/generate', { account_id, mese_anno })
+export const fetchAnagraficaMonths = (account_id: string) =>
+  get<string[]>('/admin/anagrafica/months', { account_id })
+
+export const generateForecast = (
+  account_id: string,
+  mese_anno: string,
+  anagrafica_mese_anno?: string,
+) => post<ForecastGenerateResult>('/forecast/generate', {
+  account_id,
+  mese_anno,
+  ...(anagrafica_mese_anno && anagrafica_mese_anno !== mese_anno ? { anagrafica_mese_anno } : {}),
+})
 
 export const fetchForecast = (account_id: string, mese_anno: string, pod?: string) =>
   get<ForecastPeriod[]>(`/forecast/${account_id}/${encodeURIComponent(mese_anno)}`, pod ? { pod } : {})

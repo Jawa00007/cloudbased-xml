@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 import {
   fetchAccounts, fetchPods, fetchForecast, generateForecast, fetchForecastCompare,
+  fetchAnagraficaMonths,
 } from '../api/client'
 import { itNum, itMwh } from '../utils/format'
 
@@ -37,14 +38,24 @@ function GenerateTab() {
   const qc = useQueryClient()
   const [accountId, setAccountId] = useState('')
   const [meseAnno, setMeseAnno] = useState(monthOptions()[1].value)
+  const [anagraficaMonth, setAnagraficaMonth] = useState<string>('')
   const [selectedPod, setSelectedPod] = useState<string | null>(null)
   const [generated, setGenerated] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const { data: accounts = [] } = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
 
+  const { data: anagraficaMonths = [] } = useQuery({
+    queryKey: ['anagrafica-months', accountId],
+    queryFn: () => fetchAnagraficaMonths(accountId),
+    enabled: !!accountId,
+  })
+
+  // When available months load, default to forecast month if available, else latest
+  const effectiveAnaMonth = anagraficaMonth || anagraficaMonths[0] || meseAnno
+
   const generate = useMutation({
-    mutationFn: () => generateForecast(accountId, meseAnno),
+    mutationFn: () => generateForecast(accountId, meseAnno, effectiveAnaMonth),
     onSuccess: () => {
       setGenerated(true); setError(null)
       qc.invalidateQueries({ queryKey: ['forecast', accountId, meseAnno] })
@@ -82,7 +93,7 @@ function GenerateTab() {
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account</label>
             <select value={accountId}
-              onChange={e => { setAccountId(e.target.value); setGenerated(false); setSelectedPod(null) }}
+              onChange={e => { setAccountId(e.target.value); setGenerated(false); setSelectedPod(null); setAnagraficaMonth('') }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[160px]">
               <option value="">Select account…</option>
               {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.display_name ?? a.account_id}</option>)}
@@ -95,6 +106,24 @@ function GenerateTab() {
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+              Registry (Anagrafica)
+            </label>
+            <select
+              value={anagraficaMonth || effectiveAnaMonth}
+              onChange={e => { setAnagraficaMonth(e.target.value); setGenerated(false) }}
+              disabled={!accountId}
+              className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px] disabled:opacity-40"
+            >
+              {anagraficaMonths.length === 0
+                ? <option value={meseAnno}>{meseAnno} (default)</option>
+                : anagraficaMonths.map(m => (
+                    <option key={m} value={m}>{m}{m === meseAnno ? ' ✓' : ''}</option>
+                  ))
+              }
+            </select>
+          </div>
           <button onClick={() => generate.mutate()} disabled={!accountId || generate.isPending}
             className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
             {generate.isPending ? 'Generating…' : 'Generate Forecast'}
@@ -104,6 +133,9 @@ function GenerateTab() {
         {generate.isSuccess && (
           <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
             {generate.data.periods_written.toLocaleString()} periods written for {generate.data.mese_anno}
+            {effectiveAnaMonth !== meseAnno && (
+              <span className="ml-2 text-green-600">(registry: {effectiveAnaMonth})</span>
+            )}
           </div>
         )}
       </div>

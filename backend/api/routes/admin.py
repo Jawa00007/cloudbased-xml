@@ -67,6 +67,25 @@ async def upload_anagrafica(
 
 
 @router.get(
+    "/anagrafica/months",
+    response_model=list[str],
+    summary="List months for which ANAGRAFICA data exists for an account",
+)
+async def list_anagrafica_months(
+    account_id: str,
+    _: Auth,
+) -> list[str]:
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        rows = await session.execute(text("""
+            SELECT DISTINCT mese_anno FROM anagrafica
+            WHERE account_id = :acct
+            ORDER BY mese_anno DESC
+        """), {"acct": account_id})
+        return [r[0] for r in rows.fetchall()]
+
+
+@router.get(
     "/anagrafica",
     response_model=list[AnagraficaOut],
     summary="List ANAGRAFICA records for an account and month",

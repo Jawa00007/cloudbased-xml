@@ -48,9 +48,10 @@ async def run_generate_forecast(
       3. Apply grid-loss adjustment, convert kWh → MWh
       4. Upsert all rows into forecast_periods table
     """
+    ana_month = body.anagrafica_mese_anno or body.mese_anno
     schema = schema_for(body.account_id)
     async with get_session(schema) as session:
-        rows = await generate_forecast(session, body.account_id, body.mese_anno)
+        rows = await generate_forecast(session, body.account_id, body.mese_anno, ana_month)
         if not rows:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

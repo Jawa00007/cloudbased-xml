@@ -196,9 +196,15 @@ async def generate_forecast(
     session: AsyncSession,
     account_id: str,
     forecast_mese_anno: str,
+    anagrafica_mese_anno: str | None = None,
 ) -> list[ForecastRow]:
     """
     Generate the full forecast for one account + month.
+
+    anagrafica_mese_anno: which registry (ANAGRAFICA) to use for the POD list.
+      Defaults to forecast_mese_anno when not provided. Decoupling the two lets
+      you, e.g., forecast 04/2026 using the 04/2026 registry but draw historical
+      consumption from 04/2025.
 
     Returns a list of ForecastRow (one per POD × 31 days × 96 periods).
     The caller is responsible for upserting into forecast_periods.
@@ -207,9 +213,15 @@ async def generate_forecast(
     (regardless of POD count) to avoid per-POD round-trips that would
     exceed Render's 90-second request timeout.
     """
+    ana_month    = anagrafica_mese_anno or forecast_mese_anno
     source_month = _source_mese_anno(forecast_mese_anno)
     loss_rules   = await _load_loss_rules(session, account_id)
-    ana_pods     = await _load_anagrafica_pods(session, account_id, forecast_mese_anno)
+    ana_pods     = await _load_anagrafica_pods(session, account_id, ana_month)
+
+    log.info(
+        "Forecast %s target=%s registry=%s source=%s",
+        account_id, forecast_mese_anno, ana_month, source_month,
+    )
 
     if not ana_pods:
         log.warning("No ANAGRAFICA data for %s / %s — nothing to forecast", account_id, forecast_mese_anno)
