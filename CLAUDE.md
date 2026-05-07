@@ -20,7 +20,7 @@ Each account has its own PostgreSQL schema. Password rotation every 3 months.
 
 - **Backend**: Python 3.14, FastAPI, SQLAlchemy (async) ≥2.0.37, Alembic, Pydantic v2
 - **Frontend**: React 18, TypeScript, Vite, Recharts, TanStack Query, Tailwind CSS
-- **Database**: Supabase (PostgreSQL 15) — Session Pooler URL, one schema per account
+- **Database**: PostgreSQL 16 (local Docker on DigitalOcean droplet), one schema per account
 - **Infrastructure**: DigitalOcean Droplet (4 vCPU / 8 GB RAM / 160 GB SSD) + WireGuard or OpenVPN for Italian IP
 - **Scheduler**: APScheduler or cron — nightly at 02:00, plus manual trigger via API
 - **Ingestion**: Nextcloud WebDAV pull directly from server (no NAS dependency)
@@ -52,7 +52,7 @@ data/               # Local XML files (one folder per account)
 
 reports/            # Generated HTML client confirmation reports (report.py)
 
-report.py           # Standalone: connects to Supabase, outputs reports/<account>.html
+report.py           # Standalone: connects to DB, outputs reports/<account>.html
 ```
 
 ---
@@ -482,10 +482,10 @@ ORDER BY m.data_misura;
 ## Environment Variables
 
 ```env
-# Database — Supabase Session Pooler (NOT Transaction Pooler)
-# Format: postgresql+psycopg://postgres.<ref>:<password>@aws-1-<region>.pooler.supabase.com:5432/postgres
-# IMPORTANT: password must be alphanumeric only — special chars break URL parsing even when encoded
-DATABASE_URL=postgresql+psycopg://postgres.<project_ref>:<password>@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres
+# Database — local PostgreSQL on DigitalOcean (Docker container named "db")
+# Production: db is the Docker Compose service name
+DATABASE_URL=postgresql+psycopg://sii:sii_db_2024@db:5432/sii
+# Local dev (SSH tunnel or port-forward): postgresql+psycopg://sii:sii_db_2024@localhost:5433/sii
 
 # Nextcloud (one set per account — prefix with account name, added in Milestone 2)
 BAT_NEXTCLOUD_URL=https://...
@@ -541,7 +541,7 @@ CREATE TABLE public.accounts (
 - [x] File logging — `files` table, every file logged with status
 - [x] DB models — `measurements`, `measurements_secondary`, `measurements_totalizer`,
       `corrections`, `pod_metadata`, `files`
-- [x] Supabase connection — Session Pooler, psycopg driver
+- [x] PostgreSQL connection — local Docker on DigitalOcean, psycopg driver
 - [x] Client confirmation report — `report.py` → `reports/<account>.html`
 - [ ] Nextcloud WebDAV client (Milestone 2 — server needs Italian IP via VPN)
 - [ ] ElencoFileGiornalieri index reader

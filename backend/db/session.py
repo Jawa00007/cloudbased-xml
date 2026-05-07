@@ -29,18 +29,29 @@ if sys.platform == "win32":
         asyncio.WindowsSelectorEventLoopPolicy()
     )
 
-# Supabase gives a postgresql:// or postgres:// URL by default.
-# psycopg3 (async) requires the postgresql+psycopg:// scheme — fix it transparently.
+# Normalise postgresql:// or postgres:// to the postgresql+psycopg:// scheme
+# that psycopg3 (async) requires — fix it transparently.
 def _fix_db_url(url: str) -> str:
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
             url = "postgresql+psycopg://" + url[len(prefix):]
             break
-    # Supabase Session Pooler requires SSL — append if not already specified
-    if "sslmode" not in url:
+    # Only add sslmode=require for remote hosts (Supabase/RDS/etc), not local Docker
+    if "sslmode" not in url and _is_remote_host(url):
         sep = "&" if "?" in url else "?"
         url = url + sep + "sslmode=require"
     return url
+
+
+def _is_remote_host(url: str) -> bool:
+    """Return True if the DB host is not a local/Docker hostname."""
+    local_hosts = ("localhost", "127.0.0.1", "db", "postgres", "database")
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        return not any(host == h or host.endswith(f".{h}") for h in local_hosts)
+    except Exception:
+        return True
 
 engine = create_async_engine(
     _fix_db_url(settings.DATABASE_URL),

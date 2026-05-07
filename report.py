@@ -1,5 +1,5 @@
 """
-Client data confirmation report — reads live data from Supabase and generates
+Client data confirmation report — reads live data from the database and generates
 an HTML report showing PODs, date ranges, record counts, and sample measurements.
 
 Usage:
