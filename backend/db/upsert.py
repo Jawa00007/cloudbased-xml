@@ -406,6 +406,16 @@ async def upsert_forecast_periods(
         for r in rows
     ]
 
+    # Deduplicate by conflict key before chunking.
+    # A POD appearing twice in anagrafica would produce duplicate rows; two rows
+    # with the same key inside one INSERT ... ON CONFLICT statement cause
+    # "cannot affect row a second time" in PostgreSQL.
+    seen: dict[tuple, dict] = {}
+    for v in values:
+        key = (v["account_id"], v["pod"], v["forecast_date"], v["periodo"])
+        seen[key] = v  # last occurrence wins
+    values = list(seen.values())
+
     total = 0
     for i in range(0, len(values), _FORECAST_CHUNK):
         chunk = values[i : i + _FORECAST_CHUNK]

@@ -228,6 +228,19 @@ async def generate_forecast(
         log.warning("No ANAGRAFICA data for %s / %s — nothing to forecast", account_id, forecast_mese_anno)
         return []
 
+    # Deduplicate by pod — anagrafica should be unique per pod but guard against
+    # duplicate uploads that slip past the unique constraint (e.g. same pod,
+    # different source_file). Keep first occurrence.
+    seen_pods: set[str] = set()
+    unique_ana: list[dict] = []
+    for a in ana_pods:
+        if a["pod"] not in seen_pods:
+            seen_pods.add(a["pod"])
+            unique_ana.append(a)
+    if len(unique_ana) < len(ana_pods):
+        log.warning("Deduplicated %d duplicate PODs from ANAGRAFICA", len(ana_pods) - len(unique_ana))
+    ana_pods = unique_ana
+
     pods   = [a["pod"] for a in ana_pods]
     puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
 
