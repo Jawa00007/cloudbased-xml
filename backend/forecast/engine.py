@@ -392,6 +392,59 @@ async def get_forecast_periods_by_dp(
     }
 
 
+async def get_forecast_ea_matrix(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str,
+) -> dict:
+    """
+    Return forecast data in SII Ea-row format:
+    one row per (zona, day-of-month) with 96 period columns.
+
+    Maps to the classic SII XML structure:
+      <Ea E1="..." E2="..." ... E96="...">DD</Ea>
+    """
+    rows = await session.execute(text("""
+        SELECT COALESCE(punto_dispacciamento, 'Unknown') AS zona,
+               forecast_date,
+               periodo,
+               SUM(ea_mwh_with_loss) AS value
+        FROM forecast_periods
+        WHERE account_id = :acct AND mese_anno = :ma
+        GROUP BY zona, forecast_date, periodo
+        ORDER BY zona, forecast_date, periodo
+    """), {"acct": account_id, "ma": mese_anno})
+
+    all_rows = rows.fetchall()
+    if not all_rows:
+        return {"zones": [], "rows": []}
+
+    # Build {(zona, date): {periodo: value}}
+    lookup: dict = {}
+    zones_set: set = set()
+    dates_by_zone: dict = {}
+
+    for r in all_rows:
+        zona, d, periodo, value = r[0], r[1], r[2], float(r[3]) if r[3] else 0.0
+        zones_set.add(zona)
+        dates_by_zone.setdefault(zona, set()).add(d)
+        lookup.setdefault((zona, d), {})[periodo] = value
+
+    zones = sorted(zones_set)
+
+    result_rows = []
+    for zona in zones:
+        for d in sorted(dates_by_zone[zona]):
+            period_vals = lookup.get((zona, d), {})
+            result_rows.append({
+                "zona": zona,
+                "day": d.day,          # day-of-month integer (1–31)
+                "values": [round(period_vals.get(p, 0.0), 6) for p in range(1, 97)],
+            })
+
+    return {"zones": zones, "rows": result_rows}
+
+
 async def compare_dispatching_points(
     session: AsyncSession,
     account_id: str,

@@ -42,6 +42,7 @@ from backend.forecast.engine import (
     compare_partial_month,
     generate_forecast,
     get_forecast_by_dp,
+    get_forecast_ea_matrix,
     get_forecast_periods_by_dp,
 )
 from backend.ingestion.ingest import schema_for
@@ -67,36 +68,37 @@ def _header_cell(ws, row: int, col: int, value: str) -> None:
 
 
 def _make_forecast_excel(account_id: str, mese_anno: str, data: dict) -> bytes:
-    """Build forecast Excel: one row per (date, period), one column per dispatching point."""
+    """
+    Build forecast Excel in SII Ea-row format.
+
+    Layout:
+      Col A  : zona  (dispatching point name)
+      Col B  : Ea    (day-of-month, 1–31)
+      Col C… : 1, 2, … 96  (quarter-hour period values, MWh)
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Forecast"
 
-    dps = data["dispatching_points"]
-    headers = ["Date", "Period"] + dps + ["Total MWh"]
+    # Header row
+    _header_cell(ws, 1, 1, "zona")
+    _header_cell(ws, 1, 2, "Ea")
+    for p in range(1, 97):
+        _header_cell(ws, 1, 2 + p, p)
 
-    for col_idx, h in enumerate(headers, 1):
-        _header_cell(ws, 1, col_idx, h)
+    # Data rows — one per (zona, day)
+    for row_idx, row in enumerate(data["rows"], 2):
+        ws.cell(row=row_idx, column=1, value=row["zona"])
+        ws.cell(row=row_idx, column=2, value=row["day"])
+        for p_idx, val in enumerate(row["values"], 3):
+            ws.cell(row=row_idx, column=p_idx, value=val)
 
-    for row_idx, row in enumerate(data["periods"], 2):
-        ws.cell(row=row_idx, column=1, value=row["date"])
-        ws.cell(row=row_idx, column=2, value=row["periodo"])
-        for j, dp in enumerate(dps, 3):
-            ws.cell(row=row_idx, column=j, value=round(row.get(dp, 0.0), 6))
-        ws.cell(row=row_idx, column=len(headers), value=round(row.get("total", 0.0), 6))
-
-    tr = len(data["periods"]) + 2
-    bold = Font(bold=True)
-    ws.cell(row=tr, column=1, value="TOTAL").font = bold
-    ws.cell(row=tr, column=2, value="").font = bold
-    for j, dp in enumerate(dps, 3):
-        ws.cell(row=tr, column=j, value=round(sum(r.get(dp, 0) for r in data["periods"]), 4)).font = bold
-    ws.cell(row=tr, column=len(headers), value=round(data["total_mwh"], 4)).font = bold
-
-    ws.column_dimensions["A"].width = 13
-    ws.column_dimensions["B"].width = 9
-    for col_idx in range(3, len(headers) + 1):
-        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 16
+    # Column widths
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 6
+    for col_idx in range(3, 99):
+        col_letter = ws.cell(row=1, column=col_idx).column_letter
+        ws.column_dimensions[col_letter].width = 10
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -316,9 +318,9 @@ async def export_forecast(
     """Download forecast_periods as Excel: one row per (date, period), one column per zone."""
     schema = schema_for(account_id)
     async with get_session(schema) as session:
-        data = await get_forecast_periods_by_dp(session, account_id, mese_anno)
+        data = await get_forecast_ea_matrix(session, account_id, mese_anno)
 
-    if not data["dispatching_points"]:
+    if not data["rows"]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
