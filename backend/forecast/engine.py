@@ -300,6 +300,160 @@ async def generate_forecast(
     return all_rows
 
 
+async def get_forecast_by_dp(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str,
+) -> dict:
+    """Return daily forecast totals grouped by dispatching point (for Excel export)."""
+    rows = await session.execute(text("""
+        SELECT forecast_date,
+               COALESCE(punto_dispacciamento, 'Unknown') AS dp,
+               SUM(ea_mwh_with_loss) AS daily_mwh
+        FROM forecast_periods
+        WHERE account_id = :acct AND mese_anno = :ma
+        GROUP BY forecast_date, dp
+        ORDER BY forecast_date, dp
+    """), {"acct": account_id, "ma": mese_anno})
+
+    all_rows = rows.fetchall()
+    if not all_rows:
+        return {"dispatching_points": [], "daily": [], "total_mwh": 0.0}
+
+    dp_set = sorted(set(r[1] for r in all_rows))
+    dates  = sorted(set(r[0] for r in all_rows))
+
+    dp_daily: dict = {}
+    for r in all_rows:
+        dp_daily[(r[0], r[1])] = float(r[2]) if r[2] else 0.0
+
+    daily = []
+    for d in dates:
+        row: dict = {"date": d.isoformat()}
+        total = 0.0
+        for dp in dp_set:
+            mwh = round(dp_daily.get((d, dp), 0.0), 4)
+            row[dp] = mwh
+            total += mwh
+        row["total"] = round(total, 4)
+        daily.append(row)
+
+    return {
+        "mese_anno": mese_anno,
+        "dispatching_points": dp_set,
+        "daily": daily,
+        "total_mwh": round(sum(r["total"] for r in daily), 3),
+    }
+
+
+async def compare_dispatching_points(
+    session: AsyncSession,
+    account_id: str,
+    from_date: date,
+    to_date: date,
+    anagrafica_mese_anno: str | None = None,
+    pods: list[str] | None = None,
+) -> dict:
+    """Year-over-year comparison aggregated by dispatching point."""
+    prev_from = date(from_date.year - 1, from_date.month, from_date.day)
+    prev_to   = date(to_date.year   - 1, to_date.month,   to_date.day)
+
+    ana_month = anagrafica_mese_anno or f"{from_date.month:02d}/{from_date.year}"
+
+    ana_filter = "AND pod = ANY(:pods)" if pods else ""
+    ana_params: dict = {"acct": account_id, "ma": ana_month}
+    if pods:
+        ana_params["pods"] = pods
+
+    pod_dp_rows = await session.execute(text(f"""
+        SELECT pod, COALESCE(punto_dispacciamento, 'Unknown') AS dp
+        FROM anagrafica
+        WHERE account_id = :acct AND mese_anno = :ma AND included = TRUE
+        {ana_filter}
+    """), ana_params)
+    pod_dp_map: dict[str, str] = {r[0]: r[1] for r in pod_dp_rows.fetchall()}
+
+    _empty: dict = {
+        "account_id": account_id,
+        "anagrafica_month": ana_month,
+        "current_period": {"from": from_date.isoformat(), "to": to_date.isoformat()},
+        "previous_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
+        "dispatching_points": [],
+        "current_daily": [],
+        "previous_daily": [],
+        "current_total_mwh": 0.0,
+        "previous_total_mwh": 0.0,
+    }
+    if not pod_dp_map:
+        return _empty
+
+    all_pods = list(pod_dp_map.keys())
+    dp_set = sorted(set(pod_dp_map.values()))
+
+    async def _fetch(fd: date, td: date) -> list[dict]:
+        e_rows = await session.execute(text("""
+            SELECT pod, data_misura, SUM(ea_kwh) AS kwh
+            FROM measurements
+            WHERE account_id = :acct AND pod = ANY(:pods)
+              AND data_misura >= :fd AND data_misura <= :td
+              AND tipo_dato = 'E'
+            GROUP BY pod, data_misura
+        """), {"acct": account_id, "pods": all_pods, "fd": fd, "td": td})
+
+        combined: dict[tuple, float] = {}
+        e_by_pod: dict[str, set] = {}
+        for r in e_rows.fetchall():
+            pod, d, kwh = r[0], r[1], float(r[2]) if r[2] else 0.0
+            combined[(pod, d)] = kwh
+            e_by_pod.setdefault(pod, set()).add(d)
+
+        s_rows = await session.execute(text("""
+            SELECT pod, data_misura, SUM(ea_kwh) AS kwh
+            FROM measurements_secondary
+            WHERE account_id = :acct AND pod = ANY(:pods)
+              AND data_misura >= :fd AND data_misura <= :td
+            GROUP BY pod, data_misura
+        """), {"acct": account_id, "pods": all_pods, "fd": fd, "td": td})
+
+        for r in s_rows.fetchall():
+            pod, d, kwh = r[0], r[1], float(r[2]) if r[2] else 0.0
+            if d not in e_by_pod.get(pod, set()):
+                combined[(pod, d)] = kwh
+
+        dp_daily: dict[tuple, float] = {}
+        for (pod, d), kwh in combined.items():
+            dp = pod_dp_map.get(pod, "Unknown")
+            key = (d, dp)
+            dp_daily[key] = dp_daily.get(key, 0.0) + kwh
+
+        result = []
+        for d in sorted(set(k[0] for k in dp_daily)):
+            row: dict = {"date": d.isoformat()}
+            total = 0.0
+            for dp in dp_set:
+                mwh = round(dp_daily.get((d, dp), 0.0) / 1000, 4)
+                row[dp] = mwh
+                total += mwh
+            row["total"] = round(total, 4)
+            result.append(row)
+        return result
+
+    current_daily  = await _fetch(from_date, to_date)
+    previous_daily = await _fetch(prev_from, prev_to)
+
+    return {
+        "account_id": account_id,
+        "anagrafica_month": ana_month,
+        "current_period": {"from": from_date.isoformat(), "to": to_date.isoformat()},
+        "previous_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
+        "dispatching_points": dp_set,
+        "current_daily": current_daily,
+        "previous_daily": previous_daily,
+        "current_total_mwh": round(sum(r.get("total", 0) for r in current_daily), 3),
+        "previous_total_mwh": round(sum(r.get("total", 0) for r in previous_daily), 3),
+    }
+
+
 async def compare_partial_month(
     session: AsyncSession,
     account_id: str,

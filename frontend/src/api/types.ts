@@ -113,6 +113,24 @@ export interface CompareOut {
   previous_total_mwh: number
 }
 
+export interface CompareDPDailyRow {
+  date: string
+  total: number
+  [dp: string]: number | string
+}
+
+export interface CompareDPOut {
+  account_id: string
+  anagrafica_month: string
+  current_period: { from: string; to: string }
+  previous_period: { from: string; to: string }
+  dispatching_points: string[]
+  current_daily: CompareDPDailyRow[]
+  previous_daily: CompareDPDailyRow[]
+  current_total_mwh: number
+  previous_total_mwh: number
+}
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 export interface LossRule {

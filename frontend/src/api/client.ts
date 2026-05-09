@@ -1,6 +1,6 @@
 import type {
-  Account, AnagraficaRecord, CompareOut, CorrectionSummary, DailyTotal, DispatchingWeight, FileLog,
-  ForecastGenerateResult, ForecastPeriod, LossRule,
+  Account, AnagraficaRecord, CompareDPOut, CompareOut, CorrectionSummary, DailyTotal,
+  DispatchingWeight, FileLog, ForecastGenerateResult, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
 } from './types'
 
@@ -143,6 +143,53 @@ export const fetchForecast = (account_id: string, mese_anno: string, pod?: strin
 export const fetchForecastCompare = (
   account_id: string, pod: string, from_date: string, to_date: string,
 ) => get<CompareOut>('/forecast/compare', { account_id, pod, from_date, to_date })
+
+export const fetchForecastCompareDP = (
+  account_id: string,
+  from_date: string,
+  to_date: string,
+  anagrafica_mese_anno?: string,
+  pods?: string,
+) => get<CompareDPOut>('/forecast/compare-dp', {
+  account_id,
+  from_date,
+  to_date,
+  ...(anagrafica_mese_anno ? { anagrafica_mese_anno } : {}),
+  ...(pods ? { pods } : {}),
+})
+
+async function _triggerDownload(url: string, filename: string): Promise<void> {
+  const res = await fetch(url, { headers: authHeaders() })
+  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  const blob = await res.blob()
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(a.href)
+}
+
+export function downloadForecastExcel(account_id: string, mese_anno: string): Promise<void> {
+  const params = new URLSearchParams({ account_id, mese_anno })
+  const safe = mese_anno.replace('/', '-')
+  return _triggerDownload(`${BASE}/forecast/export?${params}`, `forecast_${account_id}_${safe}.xlsx`)
+}
+
+export function downloadCompareDPExcel(
+  account_id: string,
+  from_date: string,
+  to_date: string,
+  anagrafica_mese_anno?: string,
+  pods?: string,
+): Promise<void> {
+  const params = new URLSearchParams({ account_id, from_date, to_date })
+  if (anagrafica_mese_anno) params.set('anagrafica_mese_anno', anagrafica_mese_anno)
+  if (pods) params.set('pods', pods)
+  const filename = `compare_${account_id}_${from_date}_${to_date}.xlsx`
+  return _triggerDownload(`${BASE}/forecast/compare-dp/export?${params}`, filename)
+}
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
