@@ -171,6 +171,18 @@ async function _triggerDownload(url: string, filename: string): Promise<void> {
   URL.revokeObjectURL(a.href)
 }
 
+export function downloadComparePodExcel(
+  account_id: string,
+  pod: string,
+  from_date: string,
+  to_date: string,
+): Promise<void> {
+  const params = new URLSearchParams({ account_id, pod, from_date, to_date })
+  const safe_pod = pod.replace(/\//g, '_')
+  const filename = `compare_${account_id}_${safe_pod}_${from_date}_${to_date}.xlsx`
+  return _triggerDownload(`${BASE}/forecast/compare/export?${params}`, filename)
+}
+
 export function downloadForecastExcel(account_id: string, mese_anno: string): Promise<void> {
   const params = new URLSearchParams({ account_id, mese_anno })
   const safe = mese_anno.replace('/', '-')

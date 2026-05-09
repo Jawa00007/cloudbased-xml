@@ -8,7 +8,7 @@ import {
   fetchAccounts, fetchPods, fetchForecast, generateForecast,
   fetchForecastCompare, fetchForecastCompareDP,
   fetchAnagraficaMonths,
-  downloadForecastExcel, downloadCompareDPExcel,
+  downloadForecastExcel, downloadCompareDPExcel, downloadComparePodExcel,
 } from '../api/client'
 import { itNum, itMwh } from '../utils/format'
 
@@ -313,6 +313,8 @@ function CompareTab() {
   const [fromDate, setFromDate] = useState(firstOfMonth)
   const [toDate, setToDate] = useState(today)
   const [submittedPod, setSubmittedPod] = useState(false)
+  const [podDownloading, setPodDownloading] = useState(false)
+  const [podDownloadError, setPodDownloadError] = useState<string | null>(null)
 
   // DP-aggregate state
   const [dpFromDate, setDpFromDate] = useState(firstOfMonth)
@@ -346,8 +348,20 @@ function CompareTab() {
     enabled: false,
   })
 
-  function runPod() { setSubmittedPod(true); podRefetch() }
+  function runPod() { setSubmittedPod(true); setPodDownloadError(null); podRefetch() }
   function runDP() { setDpSubmitted(true); setDpError(null); dpRefetch() }
+
+  async function handlePodDownload() {
+    setPodDownloading(true)
+    setPodDownloadError(null)
+    try {
+      await downloadComparePodExcel(accountId, pod, fromDate, toDate)
+    } catch (e) {
+      setPodDownloadError((e as Error).message)
+    } finally {
+      setPodDownloading(false)
+    }
+  }
 
   async function handleDPDownload() {
     setDpDownloading(true)
@@ -463,10 +477,22 @@ function CompareTab() {
                 className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                 {podLoading ? 'Loading…' : 'Run Compare'}
               </button>
+              {compare && (
+                <button
+                  onClick={handlePodDownload}
+                  disabled={podDownloading}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                  {podDownloading ? 'Downloading…' : 'Download Excel'}
+                </button>
+              )}
             </div>
-            {podError && (
+            {(podError || podDownloadError) && (
               <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-                {(podError as Error).message}
+                {podDownloadError ?? (podError as Error).message}
               </div>
             )}
           </div>

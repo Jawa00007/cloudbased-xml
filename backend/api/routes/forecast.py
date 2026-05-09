@@ -88,6 +88,68 @@ def _make_forecast_excel(account_id: str, mese_anno: str, data: dict) -> bytes:
     return buf.getvalue()
 
 
+def _make_compare_pod_excel(data: dict) -> bytes:
+    """Build single-POD comparison Excel: daily sums, current vs previous year."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Comparison"
+
+    headers = [
+        "Date (current year)", "MWh current",
+        "Date (previous year)", "MWh previous",
+        "Delta MWh", "Change %",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        _header_cell(ws, 1, col_idx, h)
+
+    # Build daily sums from period data
+    def _daily(rows: list[dict]) -> dict[str, float]:
+        d: dict[str, float] = {}
+        for r in rows:
+            if r["ea_mwh"] is not None:
+                d[r["date"]] = d.get(r["date"], 0.0) + r["ea_mwh"]
+        return d
+
+    curr_daily = _daily(data["current_period"]["data"])
+    prev_daily = _daily(data["previous_period"]["data"])
+
+    curr_dates = sorted(curr_daily.keys())
+    prev_dates = sorted(prev_daily.keys())
+
+    for row_idx, curr_d in enumerate(curr_dates, 2):
+        prev_d = prev_dates[row_idx - 2] if row_idx - 2 < len(prev_dates) else None
+        cv = round(curr_daily[curr_d], 4)
+        pv = round(prev_daily.get(prev_d, 0.0), 4) if prev_d else 0.0
+        delta = round(cv - pv, 4)
+        pct = round((delta / pv) * 100, 2) if pv else None
+
+        ws.cell(row=row_idx, column=1, value=curr_d)
+        ws.cell(row=row_idx, column=2, value=cv)
+        ws.cell(row=row_idx, column=3, value=prev_d or "")
+        ws.cell(row=row_idx, column=4, value=pv)
+        ws.cell(row=row_idx, column=5, value=delta)
+        ws.cell(row=row_idx, column=6, value=pct)
+
+    tr = len(curr_dates) + 2
+    bold = Font(bold=True)
+    ws.cell(row=tr, column=1, value="TOTAL").font = bold
+    ws.cell(row=tr, column=2, value=round(data["current_total_mwh"], 4)).font = bold
+    ws.cell(row=tr, column=3, value="").font = bold
+    ws.cell(row=tr, column=4, value=round(data["previous_total_mwh"], 4)).font = bold
+    delta_tot = round(data["current_total_mwh"] - data["previous_total_mwh"], 4)
+    ws.cell(row=tr, column=5, value=delta_tot).font = bold
+    pct_tot = round((delta_tot / data["previous_total_mwh"]) * 100, 2) if data["previous_total_mwh"] else None
+    ws.cell(row=tr, column=6, value=pct_tot).font = bold
+
+    widths = [20, 14, 20, 14, 14, 12]
+    for col_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _make_compare_dp_excel(data: dict) -> bytes:
     """Build compare Excel: current vs previous year, one column group per DP."""
     wb = openpyxl.Workbook()
@@ -236,6 +298,36 @@ async def get_forecast_compare(
     async with get_session(schema) as session:
         result = await compare_partial_month(session, account_id, pod, from_date, to_date)
     return CompareOut(**result)
+
+
+@router.get(
+    "/compare/export",
+    summary="Download single-POD comparison as Excel",
+)
+async def export_compare_pod(
+    account_id: str,
+    pod: str,
+    _: Auth,
+    from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+) -> StreamingResponse:
+    """Download current-year vs previous-year daily comparison for a single POD as Excel."""
+    if from_date > to_date:
+        raise HTTPException(422, "from_date must be <= to_date")
+
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        result = await compare_partial_month(session, account_id, pod, from_date, to_date)
+
+    xlsx = _make_compare_pod_excel(result)
+    safe_pod = pod.replace("/", "_")
+    filename = f"compare_{account_id.lower()}_{safe_pod}_{from_date}_{to_date}.xlsx"
+
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get(
