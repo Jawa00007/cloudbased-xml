@@ -90,14 +90,20 @@ function GenerateTab() {
   }, [jobStatus])
 
   // Poll job status
-  const { data: statusData } = useQuery({
+  const { data: statusData, error: statusQueryError } = useQuery({
     queryKey: ['forecast-status', jobId],
     queryFn: () => fetchForecastStatus(jobId!),
     enabled: !!jobId && jobStatus === 'running',
     refetchInterval: 2000,
+    retry: false,
   })
 
   useEffect(() => {
+    if (statusQueryError) {
+      setJobStatus('error')
+      setError('Job not found — the server may have restarted. Please try again.')
+      return
+    }
     if (!statusData) return
     if (statusData.status === 'done') {
       setJobStatus('done')
@@ -108,7 +114,7 @@ function GenerateTab() {
       setJobStatus('error')
       setError(statusData.error ?? 'Forecast generation failed')
     }
-  }, [statusData])
+  }, [statusData, statusQueryError])
 
   const { data: forecast = [], isLoading: loadingForecast } = useQuery({
     queryKey: ['forecast', accountId, meseAnno, selectedPod],

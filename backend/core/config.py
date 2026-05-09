@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # Data path — where synced SII_CLOUD files live on this machine
     SII_DATA_PATH: str = "data"
 
-    # CORS — comma-separated list of allowed origins, e.g. https://sii-dashboard.vercel.app
+    # CORS — comma-separated list of allowed origins, e.g. https://forecast.dinamoservice.it
     # Set to * to allow all (default for local dev)
     ALLOWED_ORIGINS: str = "*"
 

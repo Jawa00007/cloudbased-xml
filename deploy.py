@@ -2,10 +2,10 @@
 Deploy latest code to the DigitalOcean server.
 
 Usage:
-    python deploy.py              # deploy backend only
-    python deploy.py --full       # deploy backend + frontend (Vercel)
+    python deploy.py           # upload backend files and rebuild API container
+    python deploy.py --full    # also upload frontend/dist and reload nginx
 """
-import os, sys, paramiko
+import sys, paramiko
 from pathlib import Path
 
 HOST = "104.248.32.23"
@@ -64,24 +64,19 @@ print("Connected.\n")
 
 print("--- Uploading backend files ---")
 sftp = client.open_sftp()
-upload_dir(sftp, PROJECT_ROOT, "/opt/sii", backend_only=True)
+upload_dir(sftp, PROJECT_ROOT, "/opt/sii", backend_only=not full)
 sftp.close()
 
-print("\n--- Restarting API container ---")
+print("\n--- Rebuilding and restarting API container ---")
 run(client, "cd /opt/sii && docker compose up -d --build api")
+
+if full:
+    print("\n--- Reloading nginx (new frontend/dist) ---")
+    run(client, "docker compose -f /opt/sii/docker-compose.yml up -d --force-recreate nginx")
 
 print("\n--- Status ---")
 run(client, "docker compose -f /opt/sii/docker-compose.yml ps")
-run(client, "curl -s http://localhost/health")
+run(client, "curl -sk https://forecast.dinamoservice.it/api/health")
 
-if full:
-    print("\n--- Deploying frontend to Vercel ---")
-    import subprocess
-    subprocess.run(
-        ["npx", "vercel", "deploy", "--prod"],
-        cwd=str(PROJECT_ROOT / "frontend"),
-        check=True,
-    )
-
-print(f"\nDone. API: http://{HOST}/docs")
+print(f"\nDone. App: https://forecast.dinamoservice.it")
 client.close()

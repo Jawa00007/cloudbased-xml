@@ -368,9 +368,9 @@ async def upsert_anagrafica(
 
 # ── Forecast periods ───────────────────────────────────────────────────────────
 
-# psycopg3 extended-query protocol limit: 65535 params per statement.
-# With 11 columns per row → max 5957 rows; use 5000 to stay safely under.
-_FORECAST_CHUNK = 5000
+# psycopg3 extended-query limit: 65535 params per statement.
+# 11 columns per row → max 5957 rows; use 5900 to stay safely under.
+_CHUNK = 5_900
 
 
 async def upsert_forecast_periods(
@@ -381,19 +381,30 @@ async def upsert_forecast_periods(
     """
     Replace forecast rows for one account + month.
 
-    Strategy: DELETE the existing month data first, then bulk-INSERT without
-    ON CONFLICT.  This is 10-20× faster than chunked ON CONFLICT upserts
-    because PostgreSQL skips all conflict-index lookups.  The whole operation
-    runs inside the caller's session transaction so it is atomic.
+    Strategy: DELETE existing month data (fast via index), then INSERT all rows
+    in chunks using ORM insert().values(chunk) which uses psycopg3 binary protocol
+    (~1.75s per 5900-row chunk, 8-10x faster than unnest text serialization).
     """
     if not rows:
         return 0
 
     table = ForecastPeriod.__table__
-    mese_anno = rows[0].mese_anno  # all rows share the same forecast month
+    mese_anno = rows[0].mese_anno
 
-    values = [
-        {
+    # Fast DELETE via index on (account_id, mese_anno)
+    await session.execute(
+        text("DELETE FROM forecast_periods WHERE account_id = :acct AND mese_anno = :ma"),
+        {"acct": account_id, "ma": mese_anno},
+    )
+
+    seen: set[tuple] = set()
+    values: list[dict] = []
+    for r in rows:
+        key = (account_id, r.pod, r.forecast_date, r.periodo)
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append({
             "account_id": account_id,
             "pod": r.pod,
             "mese_anno": r.mese_anno,
@@ -405,28 +416,13 @@ async def upsert_forecast_periods(
             "ea_mwh_with_loss": r.ea_mwh_with_loss,
             "loss_pct": r.loss_pct,
             "source_type": r.source_type,
-        }
-        for r in rows
-    ]
-
-    # Deduplicate — guard against duplicate PODs in ANAGRAFICA
-    seen: dict[tuple, dict] = {}
-    for v in values:
-        seen[(v["account_id"], v["pod"], v["forecast_date"], v["periodo"])] = v
-    values = list(seen.values())
-
-    # Delete existing month so we can do plain INSERTs (no conflict resolution needed)
-    await session.execute(
-        text("DELETE FROM forecast_periods WHERE account_id = :acct AND mese_anno = :ma"),
-        {"acct": account_id, "ma": mese_anno},
-    )
+        })
 
     total = 0
-    for i in range(0, len(values), _FORECAST_CHUNK):
-        chunk = values[i : i + _FORECAST_CHUNK]
+    for i in range(0, len(values), _CHUNK):
+        chunk = values[i : i + _CHUNK]
         await session.execute(insert(table).values(chunk))
         total += len(chunk)
-
     return total
 
 

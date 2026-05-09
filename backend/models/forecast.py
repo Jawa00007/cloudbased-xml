@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Date, DateTime, Numeric, SmallInteger, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Date, DateTime, Index, Numeric, SmallInteger, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -33,6 +33,7 @@ class ForecastPeriod(Base):
             "account_id", "pod", "forecast_date", "periodo",
             name="uq_forecast_period_key",
         ),
+        Index("ix_forecast_periods_acct_month", "account_id", "mese_anno"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

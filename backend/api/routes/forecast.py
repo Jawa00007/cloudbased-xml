@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
+import time
 import uuid
 from datetime import date
 from typing import Annotated, Any
+
+logger = logging.getLogger(__name__)
 
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -38,6 +42,7 @@ from backend.forecast.engine import (
     compare_partial_month,
     generate_forecast,
     get_forecast_by_dp,
+    get_forecast_periods_by_dp,
 )
 from backend.ingestion.ingest import schema_for
 from sqlalchemy import text
@@ -62,32 +67,35 @@ def _header_cell(ws, row: int, col: int, value: str) -> None:
 
 
 def _make_forecast_excel(account_id: str, mese_anno: str, data: dict) -> bytes:
-    """Build forecast Excel: one row per date, one column per dispatching point."""
+    """Build forecast Excel: one row per (date, period), one column per dispatching point."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Forecast"
 
     dps = data["dispatching_points"]
-    headers = ["Date"] + dps + ["Total MWh"]
+    headers = ["Date", "Period"] + dps + ["Total MWh"]
 
     for col_idx, h in enumerate(headers, 1):
         _header_cell(ws, 1, col_idx, h)
 
-    for row_idx, row in enumerate(data["daily"], 2):
+    for row_idx, row in enumerate(data["periods"], 2):
         ws.cell(row=row_idx, column=1, value=row["date"])
-        for j, dp in enumerate(dps, 2):
-            ws.cell(row=row_idx, column=j, value=round(row.get(dp, 0.0), 4))
-        ws.cell(row=row_idx, column=len(headers), value=round(row.get("total", 0.0), 4))
+        ws.cell(row=row_idx, column=2, value=row["periodo"])
+        for j, dp in enumerate(dps, 3):
+            ws.cell(row=row_idx, column=j, value=round(row.get(dp, 0.0), 6))
+        ws.cell(row=row_idx, column=len(headers), value=round(row.get("total", 0.0), 6))
 
-    tr = len(data["daily"]) + 2
+    tr = len(data["periods"]) + 2
     bold = Font(bold=True)
     ws.cell(row=tr, column=1, value="TOTAL").font = bold
-    for j, dp in enumerate(dps, 2):
-        ws.cell(row=tr, column=j, value=round(sum(r.get(dp, 0) for r in data["daily"]), 4)).font = bold
+    ws.cell(row=tr, column=2, value="").font = bold
+    for j, dp in enumerate(dps, 3):
+        ws.cell(row=tr, column=j, value=round(sum(r.get(dp, 0) for r in data["periods"]), 4)).font = bold
     ws.cell(row=tr, column=len(headers), value=round(data["total_mwh"], 4)).font = bold
 
     ws.column_dimensions["A"].width = 13
-    for col_idx in range(2, len(headers) + 1):
+    ws.column_dimensions["B"].width = 9
+    for col_idx in range(3, len(headers) + 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 16
 
     buf = io.BytesIO()
@@ -243,9 +251,14 @@ async def run_generate_forecast(
     async def _run() -> None:
         ana_month = body.anagrafica_mese_anno or body.mese_anno
         schema = schema_for(body.account_id)
+        t0 = time.monotonic()
         try:
             async with get_session(schema) as session:
+                t1 = time.monotonic()
                 rows = await generate_forecast(session, body.account_id, body.mese_anno, ana_month)
+                t2 = time.monotonic()
+                logger.info("TIMING generate_forecast: %.1fs, rows=%d", t2 - t1, len(rows))
+
                 if not rows:
                     _jobs[job_id] = {
                         "status": "error",
@@ -257,6 +270,10 @@ async def run_generate_forecast(
                     }
                     return
                 n = await upsert_forecast_periods(session, rows, body.account_id)
+                t3 = time.monotonic()
+                logger.info("TIMING upsert_forecast_periods: %.1fs, n=%d", t3 - t2, n)
+
+            logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
             _jobs[job_id] = {
                 "status": "done",
                 "result": {
@@ -268,6 +285,7 @@ async def run_generate_forecast(
                 "error": None,
             }
         except Exception as exc:
+            logger.exception("Forecast job %s failed", job_id)
             _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
 
     asyncio.create_task(_run())
@@ -295,10 +313,10 @@ async def export_forecast(
     mese_anno: str,
     _: Auth,
 ) -> StreamingResponse:
-    """Download forecast_periods as Excel, aggregated by dispatching point (one row per date)."""
+    """Download forecast_periods as Excel: one row per (date, period), one column per zone."""
     schema = schema_for(account_id)
     async with get_session(schema) as session:
-        data = await get_forecast_by_dp(session, account_id, mese_anno)
+        data = await get_forecast_periods_by_dp(session, account_id, mese_anno)
 
     if not data["dispatching_points"]:
         raise HTTPException(

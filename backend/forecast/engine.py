@@ -211,8 +211,7 @@ async def generate_forecast(
     The caller is responsible for upserting into forecast_periods.
 
     All supporting data is batch-loaded in a small fixed number of queries
-    (regardless of POD count) to avoid per-POD round-trips that would
-    exceed Render's 90-second request timeout.
+    (regardless of POD count) to avoid per-POD round-trips.
     """
     ana_month    = anagrafica_mese_anno or forecast_mese_anno
     source_month = _source_mese_anno(forecast_mese_anno)
@@ -343,6 +342,53 @@ async def get_forecast_by_dp(
         "dispatching_points": dp_set,
         "daily": daily,
         "total_mwh": round(sum(r["total"] for r in daily), 3),
+    }
+
+
+async def get_forecast_periods_by_dp(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str,
+) -> dict:
+    """Return period-level (96 per day) forecast totals grouped by dispatching point."""
+    rows = await session.execute(text("""
+        SELECT forecast_date,
+               periodo,
+               COALESCE(punto_dispacciamento, 'Unknown') AS dp,
+               SUM(ea_mwh_with_loss) AS period_mwh
+        FROM forecast_periods
+        WHERE account_id = :acct AND mese_anno = :ma
+        GROUP BY forecast_date, periodo, dp
+        ORDER BY forecast_date, periodo, dp
+    """), {"acct": account_id, "ma": mese_anno})
+
+    all_rows = rows.fetchall()
+    if not all_rows:
+        return {"dispatching_points": [], "periods": [], "total_mwh": 0.0}
+
+    dp_set = sorted(set(r[2] for r in all_rows))
+    date_period_pairs = sorted(set((r[0], r[1]) for r in all_rows))
+
+    lookup: dict = {}
+    for r in all_rows:
+        lookup[(r[0], r[1], r[2])] = float(r[3]) if r[3] else 0.0
+
+    periods = []
+    for (d, p) in date_period_pairs:
+        row: dict = {"date": d.isoformat(), "periodo": p}
+        total = 0.0
+        for dp in dp_set:
+            mwh = round(lookup.get((d, p, dp), 0.0), 6)
+            row[dp] = mwh
+            total += mwh
+        row["total"] = round(total, 6)
+        periods.append(row)
+
+    return {
+        "mese_anno": mese_anno,
+        "dispatching_points": dp_set,
+        "periods": periods,
+        "total_mwh": round(sum(r["total"] for r in periods), 3),
     }
 
 
