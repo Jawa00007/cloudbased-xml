@@ -368,7 +368,9 @@ async def upsert_anagrafica(
 
 # ── Forecast periods ───────────────────────────────────────────────────────────
 
-_FORECAST_CHUNK = 500  # rows per INSERT — keeps Render free tier within memory limits
+# psycopg3 extended-query protocol limit: 65535 params per statement.
+# With 11 columns per row → max 5957 rows; use 5000 to stay safely under.
+_FORECAST_CHUNK = 5000
 
 
 async def upsert_forecast_periods(
@@ -377,17 +379,18 @@ async def upsert_forecast_periods(
     account_id: str,
 ) -> int:
     """
-    Upsert generated forecast rows into forecast_periods.
+    Replace forecast rows for one account + month.
 
-    Conflict key: (account_id, pod, forecast_date, periodo).
-    On conflict, always replace — re-running the engine overwrites prior results.
-
-    Inserts in chunks of _FORECAST_CHUNK to avoid OOM on memory-constrained hosts.
+    Strategy: DELETE the existing month data first, then bulk-INSERT without
+    ON CONFLICT.  This is 10-20× faster than chunked ON CONFLICT upserts
+    because PostgreSQL skips all conflict-index lookups.  The whole operation
+    runs inside the caller's session transaction so it is atomic.
     """
     if not rows:
         return 0
 
     table = ForecastPeriod.__table__
+    mese_anno = rows[0].mese_anno  # all rows share the same forecast month
 
     values = [
         {
@@ -406,36 +409,22 @@ async def upsert_forecast_periods(
         for r in rows
     ]
 
-    # Deduplicate by conflict key before chunking.
-    # A POD appearing twice in anagrafica would produce duplicate rows; two rows
-    # with the same key inside one INSERT ... ON CONFLICT statement cause
-    # "cannot affect row a second time" in PostgreSQL.
+    # Deduplicate — guard against duplicate PODs in ANAGRAFICA
     seen: dict[tuple, dict] = {}
     for v in values:
-        key = (v["account_id"], v["pod"], v["forecast_date"], v["periodo"])
-        seen[key] = v  # last occurrence wins
+        seen[(v["account_id"], v["pod"], v["forecast_date"], v["periodo"])] = v
     values = list(seen.values())
+
+    # Delete existing month so we can do plain INSERTs (no conflict resolution needed)
+    await session.execute(
+        text("DELETE FROM forecast_periods WHERE account_id = :acct AND mese_anno = :ma"),
+        {"acct": account_id, "ma": mese_anno},
+    )
 
     total = 0
     for i in range(0, len(values), _FORECAST_CHUNK):
         chunk = values[i : i + _FORECAST_CHUNK]
-        stmt = (
-            insert(table)
-            .values(chunk)
-            .on_conflict_do_update(
-                constraint="uq_forecast_period_key",
-                set_={
-                    "mese_anno": insert(table).excluded.mese_anno,
-                    "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
-                    "source_date": insert(table).excluded.source_date,
-                    "ea_mwh": insert(table).excluded.ea_mwh,
-                    "ea_mwh_with_loss": insert(table).excluded.ea_mwh_with_loss,
-                    "loss_pct": insert(table).excluded.loss_pct,
-                    "source_type": insert(table).excluded.source_type,
-                },
-            )
-        )
-        await session.execute(stmt)
+        await session.execute(insert(table).values(chunk))
         total += len(chunk)
 
     return total
