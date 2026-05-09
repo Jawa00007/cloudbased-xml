@@ -563,7 +563,7 @@ export default function AdminPage() {
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {dispPoints.length === 0 && (
-                      <p className="text-xs text-slate-400">No weights configured for {accountId} yet.</p>
+                      <p className="text-xs text-slate-400">No weights configured for {accountId || 'global'} yet.</p>
                     )}
                     {dispPoints.map(pd => (
                       <button
@@ -581,6 +581,17 @@ export default function AdminPage() {
                         </span>
                       </button>
                     ))}
+                    {/* Always show "+ New zone" so user can add more after saving the first */}
+                    <button
+                      onClick={() => { setDispPoint(''); setDispPointDraft(''); setDispInput('') }}
+                      className={`text-xs px-3 py-1.5 rounded-full font-medium transition-all border border-dashed ${
+                        !dispPoint
+                          ? 'border-blue-400 text-blue-600 bg-blue-50'
+                          : 'border-slate-300 text-slate-500 hover:border-blue-300 hover:text-blue-600'
+                      }`}
+                    >
+                      + New zone
+                    </button>
                   </div>
                 )}
               </div>
@@ -625,19 +636,22 @@ export default function AdminPage() {
 
               {/* Set new weights */}
               <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
-                <h2 className="text-sm font-semibold text-slate-700 mb-1">Set Weights</h2>
+                <h2 className="text-sm font-semibold text-slate-700 mb-1">
+                  {activeDispPoint ? `Set Weights — ${activeDispPoint}` : 'Set Weights — New Zone'}
+                </h2>
                 <p className="text-xs text-slate-400 mb-4">
-                  Paste 96 values (comma or newline separated). Values will be normalised — they must sum to 1.0.
+                  Paste 96 values (comma or newline separated). Values must sum to 1.0.
                 </p>
 
-                {!activeDispPoint && (
+                {/* Always show the zone name input when no existing zone is selected */}
+                {!dispPoint && (
                   <div className="flex flex-col gap-1 mb-3">
-                    <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">New Dispatching Point</label>
+                    <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Zone Name</label>
                     <input
                       value={dispPointDraft}
-                      onChange={e => setDispPointDraft(e.target.value)}
+                      onChange={e => setDispPointDraft(e.target.value.toUpperCase())}
                       className="text-xs border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 max-w-xs"
-                      placeholder="e.g. PD_NORD_01"
+                      placeholder="e.g. NORD, SICI, CSUD…"
                     />
                   </div>
                 )}
