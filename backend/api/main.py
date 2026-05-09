@@ -113,19 +113,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Routers ────────────────────────────────────────────────────────────────────
+# ── Routers — all mounted under /api so nginx can route cleanly ────────────────
+# Frontend is served at / by nginx; API lives at /api/*
 
-app.include_router(auth_router)
-app.include_router(accounts_router)
-app.include_router(measurements_router)
-app.include_router(aggregation_router)
-app.include_router(files_router)
-app.include_router(sync_router)
-app.include_router(monitoring_router)
-app.include_router(admin_router)
-app.include_router(forecast_router)
+_API = "/api"
+
+app.include_router(auth_router,        prefix=_API)
+app.include_router(accounts_router,    prefix=_API)
+app.include_router(measurements_router, prefix=_API)
+app.include_router(aggregation_router, prefix=_API)
+app.include_router(files_router,       prefix=_API)
+app.include_router(sync_router,        prefix=_API)
+app.include_router(monitoring_router,  prefix=_API)
+app.include_router(admin_router,       prefix=_API)
+app.include_router(forecast_router,    prefix=_API)
 
 
-@app.get("/health", tags=["system"])
+@app.get("/api/health", tags=["system"])
 async def health() -> dict:
     return {"status": "ok", "environment": settings.ENVIRONMENT}
