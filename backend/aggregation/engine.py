@@ -172,23 +172,65 @@ async def get_monthly_totals_all_pods(
     account_id: str,
     mese_anno: str,
 ) -> list[MonthlyTotal]:
-    """Monthly totals for every POD in an account+month."""
-    pod_result = await session.execute(text("""
-        SELECT DISTINCT pod FROM (
-            SELECT pod FROM measurements
-            WHERE account_id = :account_id AND mese_anno = :mese_anno
-            UNION
-            SELECT pod FROM measurements_secondary
-            WHERE account_id = :account_id AND mese_anno = :mese_anno
-        ) pods ORDER BY pod
+    """
+    Monthly totals for every POD in an account+month.
+
+    Single batch query (UNION ALL) instead of the previous 1+N×3 pattern.
+    E data is preferred; S data is only used for days that have no E record.
+    """
+    from collections import defaultdict
+
+    result = await session.execute(text("""
+        SELECT pod, data_misura,
+               SUM(ea_kwh)   AS daily_kwh,
+               SUM(er_kvarh) AS daily_kvarh,
+               'E'           AS source
+        FROM measurements
+        WHERE account_id = :account_id
+          AND mese_anno  = :mese_anno
+          AND tipo_dato  = 'E'
+        GROUP BY pod, data_misura
+
+        UNION ALL
+
+        SELECT s.pod, s.data_misura,
+               SUM(s.ea_kwh),
+               SUM(s.er_kvarh),
+               'S'
+        FROM measurements_secondary s
+        WHERE s.account_id = :account_id
+          AND s.mese_anno  = :mese_anno
+          AND s.tipo_dato  = 'S'
+          AND NOT EXISTS (
+              SELECT 1 FROM measurements e
+              WHERE e.account_id = s.account_id
+                AND e.pod        = s.pod
+                AND e.data_misura = s.data_misura
+                AND e.tipo_dato  = 'E'
+          )
+        GROUP BY s.pod, s.data_misura
+        ORDER BY pod, data_misura
     """), {"account_id": account_id, "mese_anno": mese_anno})
 
-    pods = [row[0] for row in pod_result]
-    results = []
-    for pod in pods:
-        mt = await get_monthly_total(session, account_id, pod, mese_anno)
-        if mt:
-            results.append(mt)
+    pod_days: dict[str, list] = defaultdict(list)
+    for row in result:
+        pod_days[row[0]].append(row)
+
+    results: list[MonthlyTotal] = []
+    for pod in sorted(pod_days):
+        days = pod_days[pod]
+        total_kwh   = sum((d[2] or Decimal(0)) for d in days)
+        total_kvarh = sum((d[3] or Decimal(0)) for d in days)
+        sources = {d[4] for d in days}
+        source = "E" if sources == {"E"} else "S" if sources == {"S"} else "mixed"
+        results.append(MonthlyTotal(
+            pod=pod,
+            mese_anno=mese_anno,
+            monthly_kwh=total_kwh,
+            monthly_kvarh=total_kvarh,
+            days=len(days),
+            source=source,
+        ))
     return results
 
 
@@ -198,13 +240,67 @@ async def get_yearly_totals(
     pod: str,
     year: int,
 ) -> list[MonthlyTotal]:
-    """Monthly totals for each month of a year for a given POD."""
-    months = [f"{m:02d}/{year}" for m in range(1, 13)]
-    results = []
-    for mese_anno in months:
-        mt = await get_monthly_total(session, account_id, pod, mese_anno)
-        if mt:
-            results.append(mt)
+    """
+    Monthly totals for each month of a year for a given POD.
+
+    Single batch query (UNION ALL) instead of the previous 12×3 pattern.
+    mese_anno format is MM/YYYY; SUBSTRING(mese_anno, 4, 4) extracts the year part.
+    """
+    from collections import defaultdict
+
+    result = await session.execute(text("""
+        SELECT mese_anno, data_misura,
+               SUM(ea_kwh)   AS daily_kwh,
+               SUM(er_kvarh) AS daily_kvarh,
+               'E'           AS source
+        FROM measurements
+        WHERE account_id = :account_id
+          AND pod        = :pod
+          AND SUBSTRING(mese_anno, 4, 4) = :year
+          AND tipo_dato  = 'E'
+        GROUP BY mese_anno, data_misura
+
+        UNION ALL
+
+        SELECT s.mese_anno, s.data_misura,
+               SUM(s.ea_kwh),
+               SUM(s.er_kvarh),
+               'S'
+        FROM measurements_secondary s
+        WHERE s.account_id = :account_id
+          AND s.pod        = :pod
+          AND SUBSTRING(s.mese_anno, 4, 4) = :year
+          AND s.tipo_dato  = 'S'
+          AND NOT EXISTS (
+              SELECT 1 FROM measurements e
+              WHERE e.account_id  = s.account_id
+                AND e.pod         = s.pod
+                AND e.data_misura  = s.data_misura
+                AND e.tipo_dato   = 'E'
+          )
+        GROUP BY s.mese_anno, s.data_misura
+        ORDER BY mese_anno, data_misura
+    """), {"account_id": account_id, "pod": pod, "year": str(year)})
+
+    month_days: dict[str, list] = defaultdict(list)
+    for row in result:
+        month_days[row[0]].append(row)
+
+    results: list[MonthlyTotal] = []
+    for mese_anno in sorted(month_days):
+        days = month_days[mese_anno]
+        total_kwh   = sum((d[2] or Decimal(0)) for d in days)
+        total_kvarh = sum((d[3] or Decimal(0)) for d in days)
+        sources = {d[4] for d in days}
+        source = "E" if sources == {"E"} else "S" if sources == {"S"} else "mixed"
+        results.append(MonthlyTotal(
+            pod=pod,
+            mese_anno=mese_anno,
+            monthly_kwh=total_kwh,
+            monthly_kvarh=total_kvarh,
+            days=len(days),
+            source=source,
+        ))
     return results
 
 

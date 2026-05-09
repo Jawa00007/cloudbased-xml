@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: sii
-      POSTGRES_USER: sii
-      POSTGRES_PASSWORD: sii_db_2024
+      POSTGRES_DB:       ${POSTGRES_DB:-sii}
+      POSTGRES_USER:     ${POSTGRES_USER:-sii}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -15,6 +15,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.0"
 
   api:
     build: .
@@ -29,6 +34,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
 
   nginx:
     image: nginx:alpine
@@ -47,6 +57,11 @@ services:
       - adminer
     networks:
       - internal
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
 
   adminer:
     image: adminer:latest
@@ -56,6 +71,11 @@ services:
       ADMINER_DESIGN: pepa-linha
     networks:
       - internal
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
 
 networks:
   internal:

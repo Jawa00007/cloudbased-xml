@@ -67,6 +67,15 @@ sftp = client.open_sftp()
 upload_dir(sftp, PROJECT_ROOT, "/opt/sii", backend_only=not full)
 sftp.close()
 
+# Ensure server .env has POSTGRES_PASSWORD (one-time migration from hardcoded docker-compose)
+print("\n--- Ensuring server .env has POSTGRES_PASSWORD ---")
+run(client, "grep -q '^POSTGRES_PASSWORD=' /opt/sii/.env "
+            "|| echo 'POSTGRES_PASSWORD=sii_db_2024' >> /opt/sii/.env")
+run(client, "grep -q '^POSTGRES_DB=' /opt/sii/.env "
+            "|| echo 'POSTGRES_DB=sii' >> /opt/sii/.env")
+run(client, "grep -q '^POSTGRES_USER=' /opt/sii/.env "
+            "|| echo 'POSTGRES_USER=sii' >> /opt/sii/.env")
+
 print("\n--- Rebuilding and restarting API container ---")
 run(client, "cd /opt/sii && docker compose up -d --build api")
 

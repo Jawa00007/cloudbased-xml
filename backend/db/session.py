@@ -57,6 +57,10 @@ engine = create_async_engine(
     _fix_db_url(settings.DATABASE_URL),
     echo=settings.LOG_LEVEL == "DEBUG",
     pool_pre_ping=True,
+    pool_size=10,       # steady-state connections kept open
+    max_overflow=20,    # extra connections allowed under burst load
+    pool_timeout=30,    # seconds to wait for a connection before raising
+    pool_recycle=1800,  # recycle connections every 30 min to clear stale state
 )
 
 _SessionFactory = async_sessionmaker(engine, expire_on_commit=False)

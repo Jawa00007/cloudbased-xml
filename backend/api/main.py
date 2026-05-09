@@ -82,6 +82,14 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Could not seed loss_config (table may not exist yet): %s", exc)
 
+    # Guard: refuse to start production with dev placeholder credentials
+    if settings.ENVIRONMENT == "production":
+        if "dev-" in settings.SECRET_KEY or "dev-" in settings.API_KEY:
+            raise RuntimeError(
+                "Production started with dev placeholder credentials. "
+                "Set SECRET_KEY and API_KEY to strong values in .env before deploying."
+            )
+
     # Start nightly scheduler (only in production / staging)
     if settings.ENVIRONMENT != "development":
         start_scheduler()
@@ -93,13 +101,15 @@ async def lifespan(app: FastAPI):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
+_in_production = settings.ENVIRONMENT == "production"
+
 app = FastAPI(
     title="SII Energy Measurement Analytics",
     description="REST API for Italian SII electricity measurement data",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if _in_production else "/docs",
+    redoc_url=None if _in_production else "/redoc",
 )
 
 # CORS — controlled via ALLOWED_ORIGINS env var (comma-separated list or *)
@@ -109,8 +119,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
 # ── Routers — all mounted under /api so nginx can route cleanly ────────────────
