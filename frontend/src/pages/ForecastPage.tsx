@@ -45,7 +45,6 @@ function GenerateTab() {
   const [meseAnno, setMeseAnno] = useState(monthOptions()[1].value)
   const [anagraficaMonth, setAnagraficaMonth] = useState<string>('')
   const [selectedPod, setSelectedPod] = useState<string | null>(null)
-  const [generated, setGenerated] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
 
@@ -108,7 +107,6 @@ function GenerateTab() {
     if (statusData.status === 'done') {
       setJobStatus('done')
       setJobResult(statusData.result)
-      setGenerated(true)
       qc.invalidateQueries({ queryKey: ['forecast', accountId, meseAnno] })
     } else if (statusData.status === 'error') {
       setJobStatus('error')
@@ -119,7 +117,7 @@ function GenerateTab() {
   const { data: forecast = [], isLoading: loadingForecast } = useQuery({
     queryKey: ['forecast', accountId, meseAnno, selectedPod],
     queryFn: () => fetchForecast(accountId, meseAnno, selectedPod ?? undefined),
-    enabled: generated && !!accountId,
+    enabled: !!accountId && !!meseAnno,
   })
 
   const pods = [...new Set(forecast.map(r => r.pod))].sort()
@@ -159,7 +157,7 @@ function GenerateTab() {
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account</label>
             <select value={accountId}
-              onChange={e => { setAccountId(e.target.value); setGenerated(false); setSelectedPod(null); setAnagraficaMonth(''); setJobStatus('idle'); setJobId(null) }}
+              onChange={e => { setAccountId(e.target.value); setSelectedPod(null); setAnagraficaMonth(''); setJobStatus('idle'); setJobId(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[160px]">
               <option value="">Select account…</option>
               {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.display_name ?? a.account_id}</option>)}
@@ -167,7 +165,7 @@ function GenerateTab() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Forecast Month</label>
-            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setGenerated(false); setJobStatus('idle'); setJobId(null) }}
+            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setJobStatus('idle'); setJobId(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]">
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -178,7 +176,7 @@ function GenerateTab() {
             </label>
             <select
               value={anagraficaMonth || effectiveAnaMonth}
-              onChange={e => { setAnagraficaMonth(e.target.value); setGenerated(false); setJobStatus('idle'); setJobId(null) }}
+              onChange={e => { setAnagraficaMonth(e.target.value); setJobStatus('idle'); setJobId(null) }}
               disabled={!accountId}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px] disabled:opacity-40"
             >
@@ -234,7 +232,7 @@ function GenerateTab() {
         )}
       </div>
 
-      {generated && forecast.length > 0 && (
+      {forecast.length > 0 && (
         <>
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -360,9 +358,9 @@ function GenerateTab() {
         </>
       )}
 
-      {generated && !loadingForecast && forecast.length === 0 && (
+      {!loadingForecast && forecast.length === 0 && !!accountId && jobStatus === 'idle' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-10 text-center">
-          <p className="text-slate-400 text-sm">No forecast data. Click Generate Forecast above.</p>
+          <p className="text-slate-400 text-sm">No forecast data for {meseAnno}. Click Generate Forecast above.</p>
         </div>
       )}
     </div>
@@ -911,7 +909,9 @@ export default function ForecastPage() {
         ))}
       </div>
 
-      {mode === 'generate' ? <GenerateTab /> : <CompareTab />}
+      {/* Keep both tabs mounted so state survives tab switches */}
+      <div className={mode !== 'generate' ? 'hidden' : ''}><GenerateTab /></div>
+      <div className={mode !== 'compare' ? 'hidden' : ''}><CompareTab /></div>
     </div>
   )
 }

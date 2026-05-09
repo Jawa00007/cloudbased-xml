@@ -487,10 +487,4 @@ async def get_forecast(
 
         result = rows.fetchall()
 
-    if not result:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
-        )
-
     return [ForecastPeriodOut.model_validate(dict(r._mapping)) for r in result]
