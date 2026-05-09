@@ -1,15 +1,16 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
 import {
-  fetchAccounts, fetchPods, fetchForecast, generateForecast,
+  fetchAccounts, fetchPods, fetchForecast, generateForecast, fetchForecastStatus,
   fetchForecastCompare, fetchForecastCompareDP,
   fetchAnagraficaMonths,
   downloadForecastExcel, downloadCompareDPExcel, downloadComparePodExcel,
 } from '../api/client'
+import type { ForecastGenerateResult } from '../api/types'
 import { itNum, itMwh } from '../utils/format'
 
 const SOURCE_COLORS: Record<string, string> = {
@@ -48,6 +49,13 @@ function GenerateTab() {
   const [error, setError] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
 
+  // Async job state
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [jobStatus, setJobStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [jobResult, setJobResult] = useState<ForecastGenerateResult | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   const { data: accounts = [] } = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
 
   const { data: anagraficaMonths = [] } = useQuery({
@@ -58,14 +66,49 @@ function GenerateTab() {
 
   const effectiveAnaMonth = anagraficaMonth || anagraficaMonths[0] || meseAnno
 
+  // Submit job
   const generate = useMutation({
     mutationFn: () => generateForecast(accountId, meseAnno, effectiveAnaMonth),
-    onSuccess: () => {
-      setGenerated(true); setError(null)
-      qc.invalidateQueries({ queryKey: ['forecast', accountId, meseAnno] })
+    onSuccess: (data) => {
+      setJobId(data.job_id)
+      setJobStatus('running')
+      setError(null)
+      setJobResult(null)
+      setElapsed(0)
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => { setError(e.message); setJobStatus('error') },
   })
+
+  // Elapsed timer
+  useEffect(() => {
+    if (jobStatus === 'running') {
+      timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [jobStatus])
+
+  // Poll job status
+  const { data: statusData } = useQuery({
+    queryKey: ['forecast-status', jobId],
+    queryFn: () => fetchForecastStatus(jobId!),
+    enabled: !!jobId && jobStatus === 'running',
+    refetchInterval: 2000,
+  })
+
+  useEffect(() => {
+    if (!statusData) return
+    if (statusData.status === 'done') {
+      setJobStatus('done')
+      setJobResult(statusData.result)
+      setGenerated(true)
+      qc.invalidateQueries({ queryKey: ['forecast', accountId, meseAnno] })
+    } else if (statusData.status === 'error') {
+      setJobStatus('error')
+      setError(statusData.error ?? 'Forecast generation failed')
+    }
+  }, [statusData])
 
   const { data: forecast = [], isLoading: loadingForecast } = useQuery({
     queryKey: ['forecast', accountId, meseAnno, selectedPod],
@@ -88,6 +131,8 @@ function GenerateTab() {
   for (const row of forecast) sourceCount[row.source_type] = (sourceCount[row.source_type] ?? 0) + 1
   const totalRows = forecast.length
 
+  const isRunning = jobStatus === 'running' || generate.isPending
+
   async function handleDownload() {
     setDownloading(true)
     try {
@@ -108,7 +153,7 @@ function GenerateTab() {
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account</label>
             <select value={accountId}
-              onChange={e => { setAccountId(e.target.value); setGenerated(false); setSelectedPod(null); setAnagraficaMonth('') }}
+              onChange={e => { setAccountId(e.target.value); setGenerated(false); setSelectedPod(null); setAnagraficaMonth(''); setJobStatus('idle'); setJobId(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[160px]">
               <option value="">Select account…</option>
               {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.display_name ?? a.account_id}</option>)}
@@ -116,7 +161,7 @@ function GenerateTab() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Forecast Month</label>
-            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setGenerated(false) }}
+            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setGenerated(false); setJobStatus('idle'); setJobId(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]">
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -127,7 +172,7 @@ function GenerateTab() {
             </label>
             <select
               value={anagraficaMonth || effectiveAnaMonth}
-              onChange={e => { setAnagraficaMonth(e.target.value); setGenerated(false) }}
+              onChange={e => { setAnagraficaMonth(e.target.value); setGenerated(false); setJobStatus('idle'); setJobId(null) }}
               disabled={!accountId}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px] disabled:opacity-40"
             >
@@ -139,19 +184,35 @@ function GenerateTab() {
               }
             </select>
           </div>
-          <button onClick={() => generate.mutate()} disabled={!accountId || generate.isPending}
+          <button onClick={() => generate.mutate()} disabled={!accountId || isRunning}
             className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-            {generate.isPending ? 'Generating…' : 'Generate Forecast'}
+            {isRunning ? 'Generating…' : 'Generate Forecast'}
           </button>
         </div>
+
+        {/* Progress indicator */}
+        {jobStatus === 'running' && (
+          <div className="mt-3 flex items-center gap-3">
+            <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700 flex-1">
+              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Generating forecast… {elapsed}s elapsed
+            </div>
+          </div>
+        )}
+
         {error && <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>}
-        {generate.isSuccess && (
+
+        {jobStatus === 'done' && jobResult && (
           <div className="mt-3 flex items-center gap-3 flex-wrap">
             <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700 flex-1">
-              {generate.data.periods_written.toLocaleString()} periods written for {generate.data.mese_anno}
+              {jobResult.periods_written.toLocaleString()} periods written for {jobResult.mese_anno}
               {effectiveAnaMonth !== meseAnno && (
                 <span className="ml-2 text-green-600">(registry: {effectiveAnaMonth})</span>
               )}
+              <span className="ml-2 text-green-500">({elapsed}s)</span>
             </div>
             <button
               onClick={handleDownload}

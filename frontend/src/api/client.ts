@@ -1,6 +1,6 @@
 import type {
   Account, AnagraficaRecord, CompareDPOut, CompareOut, CorrectionSummary, DailyTotal,
-  DispatchingWeight, FileLog, ForecastGenerateResult, ForecastPeriod, LossRule,
+  DispatchingWeight, FileLog, ForecastGenerateResult, ForecastJob, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
 } from './types'
 
@@ -131,11 +131,14 @@ export const generateForecast = (
   account_id: string,
   mese_anno: string,
   anagrafica_mese_anno?: string,
-) => post<ForecastGenerateResult>('/forecast/generate', {
+) => post<{ job_id: string; status: string }>('/forecast/generate', {
   account_id,
   mese_anno,
   ...(anagrafica_mese_anno && anagrafica_mese_anno !== mese_anno ? { anagrafica_mese_anno } : {}),
 })
+
+export const fetchForecastStatus = (job_id: string) =>
+  get<ForecastJob>(`/forecast/status/${job_id}`)
 
 export const fetchForecast = (account_id: string, mese_anno: string, pod?: string) =>
   get<ForecastPeriod[]>(`/forecast/${account_id}/${encodeURIComponent(mese_anno)}`, pod ? { pod } : {})

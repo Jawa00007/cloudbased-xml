@@ -1,9 +1,11 @@
 """
 Forecast routes.
 
-POST /forecast/generate                     — run forecast engine for one account + month
+POST /forecast/generate                     — start forecast job (returns 202 + job_id immediately)
+GET  /forecast/status/{job_id}              — poll job status
 GET  /forecast/export                       — download forecast as Excel by dispatching point
 GET  /forecast/compare                      — year-over-year comparison for ONE pod + date range
+GET  /forecast/compare/export               — download single-POD comparison as Excel
 GET  /forecast/compare-dp                   — year-over-year comparison aggregated by DP (all / N pods)
 GET  /forecast/compare-dp/export            — download compare-dp result as Excel
 GET  /forecast/{account_id}/{mese_anno}     — fetch generated forecast periods (catch-all, must be last)
@@ -11,9 +13,11 @@ GET  /forecast/{account_id}/{mese_anno}     — fetch generated forecast periods
 
 from __future__ import annotations
 
+import asyncio
 import io
+import uuid
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Any
 
 import openpyxl
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -41,6 +45,9 @@ from sqlalchemy import text
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
 Auth = Annotated[str, Depends(require_auth)]
+
+# In-memory job store — fine for single-process uvicorn
+_jobs: dict[str, dict[str, Any]] = {}
 
 _HEADER_COLOR = "1A1A2E"
 
@@ -218,34 +225,65 @@ def _make_compare_dp_excel(data: dict) -> bytes:
 
 @router.post(
     "/generate",
-    response_model=ForecastGenerateOut,
-    status_code=status.HTTP_201_CREATED,
-    summary="Generate forecast for one account and month",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start forecast generation job (returns immediately — poll /status/{job_id})",
 )
 async def run_generate_forecast(
     body: ForecastGenerateIn,
     _: Auth,
-) -> ForecastGenerateOut:
-    ana_month = body.anagrafica_mese_anno or body.mese_anno
-    schema = schema_for(body.account_id)
-    async with get_session(schema) as session:
-        rows = await generate_forecast(session, body.account_id, body.mese_anno, ana_month)
-        if not rows:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=(
-                    f"No ANAGRAFICA data found for {body.account_id} / {body.mese_anno}. "
-                    "Upload an ANAGRAFICA file first via POST /admin/anagrafica/upload"
-                ),
-            )
-        n = await upsert_forecast_periods(session, rows, body.account_id)
+) -> dict:
+    """
+    Submits the forecast job and returns a job_id immediately.
+    The actual engine + DB writes run in the background.
+    Poll GET /forecast/status/{job_id} every few seconds until status is 'done' or 'error'.
+    """
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running", "result": None, "error": None}
 
-    return ForecastGenerateOut(
-        message="Forecast generated",
-        account_id=body.account_id,
-        mese_anno=body.mese_anno,
-        periods_written=n,
-    )
+    async def _run() -> None:
+        ana_month = body.anagrafica_mese_anno or body.mese_anno
+        schema = schema_for(body.account_id)
+        try:
+            async with get_session(schema) as session:
+                rows = await generate_forecast(session, body.account_id, body.mese_anno, ana_month)
+                if not rows:
+                    _jobs[job_id] = {
+                        "status": "error",
+                        "result": None,
+                        "error": (
+                            f"No ANAGRAFICA data found for {body.account_id} / {body.mese_anno}. "
+                            "Upload an ANAGRAFICA file first via POST /admin/anagrafica/upload"
+                        ),
+                    }
+                    return
+                n = await upsert_forecast_periods(session, rows, body.account_id)
+            _jobs[job_id] = {
+                "status": "done",
+                "result": {
+                    "message": "Forecast generated",
+                    "account_id": body.account_id,
+                    "mese_anno": body.mese_anno,
+                    "periods_written": n,
+                },
+                "error": None,
+            }
+        except Exception as exc:
+            _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
+
+    asyncio.create_task(_run())
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get(
+    "/status/{job_id}",
+    summary="Poll forecast generation job status",
+)
+async def get_forecast_job_status(job_id: str, _: Auth) -> dict:
+    """Returns {status, result, error}. status: 'running' | 'done' | 'error'."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return job
 
 
 @router.get(

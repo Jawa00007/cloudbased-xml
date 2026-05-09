@@ -104,6 +104,12 @@ export interface ForecastGenerateResult {
   periods_written: number
 }
 
+export interface ForecastJob {
+  status: 'running' | 'done' | 'error'
+  result: ForecastGenerateResult | null
+  error: string | null
+}
+
 export interface CompareOut {
   account_id: string
   pod: string
