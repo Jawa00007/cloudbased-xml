@@ -67,38 +67,65 @@ def _header_cell(ws, row: int, col: int, value: str) -> None:
     c.alignment = Alignment(horizontal="center")
 
 
+# Fixed Italian bidding-zone order (north → south + islands).
+# Always present in output regardless of which zones have forecast data.
+_ITALIAN_ZONES = ["NORD", "CNOR", "CSUD", "SUD", "SARD", "SICI", "CALA"]
+
+
 def _make_forecast_excel(account_id: str, mese_anno: str, data: dict) -> bytes:
     """
-    Build forecast Excel in SII Ea-row format.
+    Build forecast Excel in SII Ea-row format with a fixed Italian-zone template.
 
-    Layout:
-      Col A  : zona  (dispatching point name)
-      Col B  : Ea    (day-of-month, 1–31)
-      Col C… : 1, 2, … 96  (quarter-hour period values, MWh)
+    Structure (repeats for each of the 7 zones):
+      [header row: zona | Ea | 1 | 2 | … | 96]
+      [zona  |  1  | …96 period values…]   ← day 1
+      [zona  |  2  | …96 period values…]   ← day 2
+      …
+      [zona  | 31  | …96 period values…]   ← day 31 (always, even for 28/30-day months)
+      [blank row]
+
+    Zones with no forecast data have empty period cells so the file can be
+    copy-pasted directly into a master workbook without structural changes.
     """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Forecast"
 
-    # Header row
-    _header_cell(ws, 1, 1, "zona")
-    _header_cell(ws, 1, 2, "Ea")
-    for p in range(1, 97):
-        _header_cell(ws, 1, 2 + p, p)
+    # Build lookup: {(zona, day_of_month): [96 float values]}
+    lookup: dict[tuple, list] = {}
+    for row in data["rows"]:
+        lookup[(row["zona"], row["day"])] = row["values"]
 
-    # Data rows — one per (zona, day)
-    for row_idx, row in enumerate(data["rows"], 2):
-        ws.cell(row=row_idx, column=1, value=row["zona"])
-        ws.cell(row=row_idx, column=2, value=row["day"])
-        for p_idx, val in enumerate(row["values"], 3):
-            ws.cell(row=row_idx, column=p_idx, value=val)
+    current_row = 1
+
+    for z_idx, zona in enumerate(_ITALIAN_ZONES):
+        # ── Section header ────────────────────────────────────────────────────
+        _header_cell(ws, current_row, 1, "zona")
+        _header_cell(ws, current_row, 2, "Ea")
+        for p in range(1, 97):
+            _header_cell(ws, current_row, 2 + p, p)
+        current_row += 1
+
+        # ── 31 data rows (fixed length regardless of actual month days) ───────
+        for day in range(1, 32):
+            ws.cell(row=current_row, column=1, value=zona)
+            ws.cell(row=current_row, column=2, value=day)
+            values = lookup.get((zona, day))
+            if values:
+                for p_idx, val in enumerate(values, 3):
+                    ws.cell(row=current_row, column=p_idx, value=val)
+            # else: leave period cells empty (zone has no data for this day)
+            current_row += 1
+
+        # ── Blank separator row between zones ─────────────────────────────────
+        if z_idx < len(_ITALIAN_ZONES) - 1:
+            current_row += 1  # leave empty row
 
     # Column widths
     ws.column_dimensions["A"].width = 12
     ws.column_dimensions["B"].width = 6
     for col_idx in range(3, 99):
-        col_letter = ws.cell(row=1, column=col_idx).column_letter
-        ws.column_dimensions[col_letter].width = 10
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 10
 
     buf = io.BytesIO()
     wb.save(buf)
