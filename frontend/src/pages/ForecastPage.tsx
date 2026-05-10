@@ -130,6 +130,15 @@ function GenerateTab() {
     enabled: !!accountId && !!meseAnno,
   })
 
+  // Auto-clear job-not-found error when forecast data is present — data survived the restart
+  useEffect(() => {
+    if (forecast.length > 0 && error === 'Job not found — the server may have restarted. Please try again.') {
+      setError(null)
+      setJobStatus('idle')
+      setJobId(null)
+    }
+  }, [forecast.length, error])
+
   const pods = [...new Set(forecast.map(r => r.pod))].sort()
 
   const dailyMap: Record<string, Record<string, number>> = {}
