@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -33,7 +34,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from backend.api.auth import require_auth
 from backend.api.schemas import SyncStatusOut, SyncTriggerOut
 from backend.core.config import settings
-from backend.ingestion.ingest import ACCOUNT_SCHEMA_MAP, ingest_account, ingest_all
+from backend.db.session import get_session
+from backend.ingestion.ingest import ACCOUNT_SCHEMA_MAP, ingest_account, ingest_all, schema_for
 from backend.ingestion.lock import guard
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ def _load_state() -> None:
                     files_ok=rec.get("files_ok", 0),
                     files_error=rec.get("files_error", 0),
                     files_skipped=rec.get("files_skipped", 0),
+                    triggered_by=rec.get("triggered_by"),
                     running=False,
                 )
     except Exception as exc:
@@ -77,6 +80,7 @@ def _save_state() -> None:
                 "files_ok": s.files_ok,
                 "files_error": s.files_error,
                 "files_skipped": s.files_skipped,
+                "triggered_by": s.triggered_by,
             }
             for acc, s in _sync_state.items()
         }
@@ -88,6 +92,34 @@ def _save_state() -> None:
 _load_state()
 
 _ACCOUNT_TIMEOUT = 3600  # seconds — matches ingest_all's internal timeout
+
+# DB-backed last-sync cache (30s TTL) so cron-triggered runs show up in the UI
+_db_last_sync: dict[str, datetime | None] = {}
+_db_last_sync_ts: float = 0.0
+_DB_CACHE_TTL = 30.0
+
+
+async def _refresh_db_last_syncs() -> None:
+    """Query MAX(processed_at) per account schema from the files table."""
+    global _db_last_sync, _db_last_sync_ts
+    now = time.monotonic()
+    if now - _db_last_sync_ts < _DB_CACHE_TTL:
+        return
+    result: dict[str, datetime | None] = {}
+    for acc in ACCOUNT_SCHEMA_MAP:
+        schema = schema_for(acc)
+        try:
+            async with get_session(schema) as session:
+                from sqlalchemy import text
+                row = await session.execute(
+                    text("SELECT MAX(processed_at) FROM files WHERE status = 'ok'")
+                )
+                val = row.scalar()
+                result[acc] = val
+        except Exception:
+            result[acc] = None
+    _db_last_sync = result
+    _db_last_sync_ts = time.monotonic()
 
 
 def _make_status(account_id: str) -> SyncStatusOut:
@@ -145,6 +177,7 @@ async def _run_ingest(account_id: str | None) -> None:
         logger.error("Sync error: %s", exc)
 
     finally:
+        triggered_by = guard.triggered_by  # capture before release clears it
         guard.release()
         finished = datetime.now(timezone.utc)
         for acc in accounts_to_run:
@@ -156,6 +189,7 @@ async def _run_ingest(account_id: str | None) -> None:
                 files_ok=prev.files_ok,
                 files_error=prev.files_error,
                 files_skipped=prev.files_skipped,
+                triggered_by=triggered_by,
                 running=False,
             )
         _save_state()
@@ -216,6 +250,8 @@ async def sync_status(
 
     While a run is in progress, running=True is shown for all accounts
     along with current_account, elapsed_seconds, and accounts_done/total.
+    Finished-at times are sourced from the DB files table so cron-triggered
+    runs (docker exec ... ingest --all) appear in the history.
     """
     from backend.scheduler.jobs import scheduler
 
@@ -234,13 +270,29 @@ async def sync_status(
     except Exception:
         pass
 
+    # Refresh DB-backed last-sync times (cached 30s) so cron runs appear
+    try:
+        await _refresh_db_last_syncs()
+    except Exception:
+        pass
+
     for acc in ACCOUNT_SCHEMA_MAP:
         prev = _sync_state.get(acc, _make_status(acc))
+
+        # Pick the most recent finished_at between in-memory state and DB
+        db_finished = _db_last_sync.get(acc)
+        mem_finished = prev.finished_at
+        best_finished: datetime | None
+        if db_finished and mem_finished:
+            best_finished = max(db_finished, mem_finished)
+        else:
+            best_finished = db_finished or mem_finished
+
         if running:
             result.append(SyncStatusOut(
                 account_id=acc,
                 started_at=guard.started_at,
-                finished_at=None,
+                finished_at=best_finished,
                 files_ok=prev.files_ok,
                 files_error=prev.files_error,
                 files_skipped=prev.files_skipped,
@@ -253,9 +305,9 @@ async def sync_status(
                 next_run=next_run,
             ))
         else:
-            result.append(SyncStatusOut(
-                **prev.model_dump(),
-                next_run=next_run,
-            ))
+            data = prev.model_dump()
+            data["finished_at"] = best_finished
+            data["next_run"] = next_run
+            result.append(SyncStatusOut(**data))
 
     return result

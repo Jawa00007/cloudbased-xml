@@ -186,8 +186,16 @@ export default function SyncPage() {
               </div>
             )}
 
-            <div className="border-t border-slate-100 pt-3 text-[10px] text-slate-400 leading-relaxed">
-              Files are also pulled every 2 hours via cron (30 */2 * * *) from the Italian server, then ingested automatically.
+            <div className="border-t border-slate-100 pt-3 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-medium">
+                <svg className="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Nightly ingestion at 02:00 UTC
+              </div>
+              <div className="text-[10px] text-slate-400 leading-relaxed">
+                Files are also pulled every 2 hours (30 */2 * * *) from the Italian server, then ingested automatically.
+              </div>
             </div>
           </div>
 
@@ -272,7 +280,7 @@ export default function SyncPage() {
                   <span>OK</span>
                   <span>Errors</span>
                   <span>Last run</span>
-                  <span>Started</span>
+                  <span>Source</span>
                   <span>Finished</span>
                 </div>
                 <div className="divide-y divide-slate-50">
@@ -301,8 +309,16 @@ export default function SyncPage() {
                       <span className="text-slate-400 tabular-nums text-[10px]">
                         {fmtRelative(s.finished_at)}
                       </span>
-                      <span className="text-slate-400 tabular-nums">
-                        {s.started_at ? new Date(s.started_at).toLocaleTimeString('it-IT') : '—'}
+                      <span className="tabular-nums">
+                        {s.running
+                          ? (s.triggered_by === 'scheduler'
+                            ? <span className="text-purple-600 text-[10px] font-medium bg-purple-50 px-1.5 py-0.5 rounded-md">nightly</span>
+                            : <span className="text-blue-600 text-[10px] font-medium bg-blue-50 px-1.5 py-0.5 rounded-md">manual</span>)
+                          : s.triggered_by === 'scheduler'
+                          ? <span className="text-purple-500 text-[10px] font-medium bg-purple-50 px-1.5 py-0.5 rounded-md">nightly</span>
+                          : s.triggered_by === 'api'
+                          ? <span className="text-blue-500 text-[10px] font-medium bg-blue-50 px-1.5 py-0.5 rounded-md">manual</span>
+                          : <span className="text-slate-300">—</span>}
                       </span>
                       <span className="text-slate-400 tabular-nums">
                         {s.running && s.current_account === s.account_id
