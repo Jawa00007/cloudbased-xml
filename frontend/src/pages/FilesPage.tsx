@@ -1,8 +1,9 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useCallback } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchAccounts, fetchFiles } from '../api/client'
 import StatusBadge from '../components/StatusBadge'
 import { exportCSV } from '../utils/export'
+import type { FileLog } from '../api/types'
 
 const STATUS_OPTIONS = ['', 'ok', 'error', 'skipped', 'duplicate']
 
@@ -13,22 +14,57 @@ const STATUS_COLORS: Record<string, string> = {
   skipped:   'bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 hover:ring-slate-300',
 }
 
+const PAGE_SIZE = 200
+
 export default function FilesPage() {
-  const [account, setAccount] = useState('')
-  const [status, setStatus] = useState('')
+  const [account, setAccount]   = useState('')
+  const [status, setStatus]     = useState('')
+  const [rows, setRows]         = useState<FileLog[]>([])
+  const [offset, setOffset]     = useState(0)
+  const [hasMore, setHasMore]   = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
   const accounts = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
-  const files = useQuery({
-    queryKey: ['files', account, status],
-    queryFn: () => fetchFiles(account, status || undefined, 500),
+
+  // Initial fetch — resets the list whenever account or status changes
+  const filesQuery = useQuery({
+    queryKey: ['files', account, status, 0],
+    queryFn: async () => {
+      const data = await fetchFiles(account, status || undefined, PAGE_SIZE, 0)
+      setRows(data)
+      setOffset(PAGE_SIZE)
+      setHasMore(data.length === PAGE_SIZE)
+      return data
+    },
     enabled: !!account,
   })
 
-  const countsByStatus = files.data?.reduce<Record<string, number>>((acc, f) => {
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return
+    setLoadingMore(true)
+    try {
+      const more = await fetchFiles(account, status || undefined, PAGE_SIZE, offset)
+      setRows(prev => [...prev, ...more])
+      setOffset(prev => prev + PAGE_SIZE)
+      setHasMore(more.length === PAGE_SIZE)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [account, status, offset, hasMore, loadingMore])
+
+  // Reset pagination when filters change
+  const handleAccountChange = (a: string) => {
+    setAccount(a); setStatus(''); setRows([]); setOffset(0); setHasMore(false)
+  }
+  const handleStatusChange = (s: string) => {
+    setStatus(s); setRows([]); setOffset(0); setHasMore(false)
+  }
+
+  const countsByStatus = rows.reduce<Record<string, number>>((acc, f) => {
     const key = f.status ?? 'unknown'
     acc[key] = (acc[key] ?? 0) + 1
     return acc
-  }, {}) ?? {}
+  }, {})
 
   return (
     <div className="space-y-6">
@@ -44,7 +80,7 @@ export default function FilesPage() {
         <div className="flex flex-wrap gap-3">
           <select
             value={account}
-            onChange={e => setAccount(e.target.value)}
+            onChange={e => handleAccountChange(e.target.value)}
             className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300 min-w-[160px]"
           >
             <option value="">— Select account —</option>
@@ -55,7 +91,7 @@ export default function FilesPage() {
 
           <select
             value={status}
-            onChange={e => setStatus(e.target.value)}
+            onChange={e => handleStatusChange(e.target.value)}
             className="text-xs border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
           >
             {STATUS_OPTIONS.map(s => (
@@ -81,7 +117,7 @@ export default function FilesPage() {
       {account && (
         <>
           {/* Status summary pills */}
-          {files.data && (
+          {rows.length > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               {(['ok', 'error', 'duplicate', 'skipped'] as const).map(s => {
                 const n = countsByStatus[s] ?? 0
@@ -89,7 +125,7 @@ export default function FilesPage() {
                 return (
                   <button
                     key={s}
-                    onClick={() => setStatus(status === s ? '' : s)}
+                    onClick={() => handleStatusChange(status === s ? '' : s)}
                     className={`text-xs px-3 py-1 rounded-full font-semibold transition-all ${STATUS_COLORS[s]} ${
                       status && status !== s ? 'opacity-30' : ''
                     }`}
@@ -99,11 +135,13 @@ export default function FilesPage() {
                 )
               })}
               <span className="text-xs text-slate-300 mx-1">·</span>
-              <span className="text-xs text-slate-400">{files.data.length.toLocaleString()} total shown</span>
+              <span className="text-xs text-slate-400">
+                {rows.length.toLocaleString()} shown{hasMore ? '+' : ''}
+              </span>
 
-              {files.data.length > 0 && (
+              {rows.length > 0 && (
                 <button
-                  onClick={() => exportCSV(files.data!, `files_${account}${status ? '_' + status : ''}.csv`)}
+                  onClick={() => exportCSV(rows, `files_${account}${status ? '_' + status : ''}.csv`)}
                   className="ml-auto flex items-center gap-1.5 text-xs text-slate-500 hover:text-blue-600 border border-slate-200 hover:border-blue-300 rounded-lg px-3 py-1.5 bg-white transition-all"
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -125,7 +163,7 @@ export default function FilesPage() {
               <span>Error</span>
             </div>
 
-            {files.isLoading && (
+            {filesQuery.isLoading && (
               <div className="px-6 py-8 space-y-3">
                 {[1,2,3,4,5].map(i => (
                   <div key={i} className="h-3.5 bg-slate-100 rounded animate-pulse" style={{ width: `${55 + i * 8}%` }} />
@@ -133,7 +171,7 @@ export default function FilesPage() {
               </div>
             )}
 
-            {files.data?.length === 0 && (
+            {!filesQuery.isLoading && rows.length === 0 && (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <div className="w-10 h-10 bg-emerald-50 rounded-full flex items-center justify-center mb-3">
                   <svg className="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -144,9 +182,9 @@ export default function FilesPage() {
               </div>
             )}
 
-            {files.data && files.data.length > 0 && (
+            {rows.length > 0 && (
               <div className="divide-y divide-slate-50 max-h-[60vh] overflow-y-auto scrollbar-thin">
-                {files.data.map(f => (
+                {rows.map(f => (
                   <div key={f.file_id} className="grid grid-cols-6 px-6 py-2.5 text-xs hover:bg-slate-50/70 items-center">
                     <span className="col-span-2 font-mono text-slate-600 text-[11px] truncate" title={f.file_name}>
                       {f.file_name}
@@ -165,6 +203,20 @@ export default function FilesPage() {
                     </span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Load more */}
+            {hasMore && (
+              <div className="border-t border-slate-100 px-6 py-3 flex items-center justify-between bg-slate-50/60">
+                <span className="text-xs text-slate-400">{rows.length.toLocaleString()} rows loaded</span>
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="text-xs px-4 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 hover:border-blue-300 hover:text-blue-600 transition-all disabled:opacity-50"
+                >
+                  {loadingMore ? 'Loading…' : `Load ${PAGE_SIZE} more`}
+                </button>
               </div>
             )}
           </div>

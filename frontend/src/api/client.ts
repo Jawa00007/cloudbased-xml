@@ -109,8 +109,8 @@ export const fetchPeriodRange = (
   account, pod, from_date, to_date, ...(tipo_dato ? { tipo_dato } : {}),
 })
 
-export const fetchFiles      = (account: string, status?: string, limit = 200) =>
-  get<FileLog[]>('/files', { account, ...(status ? { status } : {}), limit: String(limit) })
+export const fetchFiles      = (account: string, status?: string, limit = 200, offset = 0) =>
+  get<FileLog[]>('/files', { account, ...(status ? { status } : {}), limit: String(limit), offset: String(offset) })
 
 export const fetchSyncStatus = () => get<SyncStatus[]>('/sync/status')
 export const triggerSync     = (account?: string) =>
