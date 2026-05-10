@@ -207,7 +207,7 @@ def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
     ws.title = "Forecast PODs"
 
     _header_cell(ws, 1, 1, "POD")
-    _header_cell(ws, 1, 2, "Filename")
+    _header_cell(ws, 1, 2, "Source")
     _header_cell(ws, 1, 3, "DAY")
     for p in range(1, 97):
         _header_cell(ws, 1, 3 + p, str(p))
@@ -217,7 +217,7 @@ def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
     for r in rows:
         key = (r["pod"], str(r["forecast_date"]))
         if key not in pivot:
-            pivot[key] = {"source_file": r.get("source_file") or ""}
+            pivot[key] = {"source_file": r.get("source_type") or ""}
         val = r["ea_mwh"]
         if val is not None:
             pivot[key][r["periodo"]] = float(val)
@@ -551,7 +551,7 @@ async def export_forecast_pods(
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
-                SELECT pod, forecast_date, periodo, ea_mwh, source_file
+                SELECT pod, forecast_date, periodo, ea_mwh, source_type
                 FROM forecast_periods
                 WHERE account_id = :acct AND mese_anno = :ma
                 ORDER BY pod, forecast_date, periodo
