@@ -212,6 +212,9 @@ function GenerateTab() {
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]">
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
+            <span className="text-[10px] text-slate-400 mt-0.5">
+              Source measurements: <span className="font-medium text-slate-500">{(() => { const [mm, yy] = meseAnno.split('/'); return `${mm}/${parseInt(yy) - 1}` })()} (auto)</span>
+            </span>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">

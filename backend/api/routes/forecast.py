@@ -200,32 +200,32 @@ def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
     """
     Build per-POD wide-format Excel using write_only mode (fast for large datasets).
 
-    Columns: POD | Source | DAY | 1 | 2 | … | 96
+    Columns: POD | Source | Source File | DAY | 1 | 2 | … | 96
     One row per (pod, forecast_date). Period values are ea_mwh (MWh).
+    Source File is the XML filename when source_type is E or S; blank for filled/estimated.
     """
-    # Build pivot first: {(pod, date_str): {periodo: value, "src": source_type}}
+    # Build pivot: {(pod, date_str): {periodo: value, "src": source_type, "src_file": filename}}
     pivot: dict[tuple[str, str], dict] = {}
     for r in rows:
         key = (r["pod"], str(r["forecast_date"]))
         if key not in pivot:
-            pivot[key] = {"src": r.get("source_type") or ""}
+            pivot[key] = {
+                "src": r.get("source_type") or "",
+                "src_file": r.get("source_file") or "",
+            }
         val = r["ea_mwh"]
         if val is not None:
             pivot[key][r["periodo"]] = float(val)
 
-    # write_only=True: sequential row appends only — no random cell access.
-    # Dramatically faster than regular mode for large sheets (10-20x).
     wb = openpyxl.Workbook(write_only=True)
     ws = wb.create_sheet("Forecast PODs")
 
-    # Header
-    ws.append(["POD", "Source", "DAY"] + [str(p) for p in range(1, 97)])
+    ws.append(["POD", "Source", "Source File", "DAY"] + [str(p) for p in range(1, 97)])
 
-    # Data rows
     for (pod, date_str) in sorted(pivot.keys()):
         entry = pivot[(pod, date_str)]
         day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
-        ws.append([pod, entry["src"], day] + [entry.get(p) for p in range(1, 97)])
+        ws.append([pod, entry["src"], entry["src_file"], day] + [entry.get(p) for p in range(1, 97)])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -577,10 +577,29 @@ async def export_forecast_pods(
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
-                SELECT pod, forecast_date, periodo, ea_mwh, source_type
-                FROM forecast_periods
-                WHERE account_id = :acct AND mese_anno = :ma
-                ORDER BY pod, forecast_date, periodo
+                SELECT
+                    fp.pod,
+                    fp.forecast_date,
+                    fp.periodo,
+                    fp.ea_mwh,
+                    fp.source_type,
+                    COALESCE(me.source_file, ms.source_file) AS source_file
+                FROM forecast_periods fp
+                LEFT JOIN measurements me
+                    ON me.account_id = fp.account_id
+                    AND me.pod = fp.pod
+                    AND me.data_misura = fp.source_date
+                    AND me.periodo = fp.periodo
+                    AND me.tipo_dato = 'E'
+                LEFT JOIN measurements_secondary ms
+                    ON ms.account_id = fp.account_id
+                    AND ms.pod = fp.pod
+                    AND ms.data_misura = fp.source_date
+                    AND ms.periodo = fp.periodo
+                    AND ms.tipo_dato = 'S'
+                    AND me.id IS NULL
+                WHERE fp.account_id = :acct AND fp.mese_anno = :ma
+                ORDER BY fp.pod, fp.forecast_date, fp.periodo
             """),
             {"acct": account_id, "ma": mese_anno},
         )
