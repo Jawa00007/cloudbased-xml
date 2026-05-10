@@ -169,7 +169,7 @@ function GenerateTab() {
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account</label>
             <select value={accountId}
-              onChange={e => { setAccountId(e.target.value); setSelectedPod(null); setAnagraficaMonth(''); setJobStatus('idle'); setJobId(null) }}
+              onChange={e => { setAccountId(e.target.value); setSelectedPod(null); setAnagraficaMonth(''); setJobStatus('idle'); setJobId(null); setError(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[160px]">
               <option value="">Select account…</option>
               {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.display_name ?? a.account_id}</option>)}
@@ -177,7 +177,7 @@ function GenerateTab() {
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Forecast Month</label>
-            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setJobStatus('idle'); setJobId(null) }}
+            <select value={meseAnno} onChange={e => { setMeseAnno(e.target.value); setJobStatus('idle'); setJobId(null); setError(null) }}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px]">
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -188,7 +188,7 @@ function GenerateTab() {
             </label>
             <select
               value={anagraficaMonth || effectiveAnaMonth}
-              onChange={e => { setAnagraficaMonth(e.target.value); setJobStatus('idle'); setJobId(null) }}
+              onChange={e => { setAnagraficaMonth(e.target.value); setJobStatus('idle'); setJobId(null); setError(null) }}
               disabled={!accountId}
               className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[140px] disabled:opacity-40"
             >
@@ -219,7 +219,17 @@ function GenerateTab() {
           </div>
         )}
 
-        {error && <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>}
+        {error && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between gap-3">
+            <span>{error}</span>
+            <button
+              onClick={() => { setError(null); setJobStatus('idle'); setJobId(null) }}
+              className="shrink-0 text-xs font-medium px-3 py-1 rounded-md bg-red-100 hover:bg-red-200 text-red-800 transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {jobStatus === 'done' && jobResult && (
           <div className="mt-3 flex items-center gap-3 flex-wrap">
