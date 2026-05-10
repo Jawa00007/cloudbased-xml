@@ -29,15 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-# Status file written by run_backfill.sh — mounted at /app/data/.backfill_status.json
-_BACKFILL_STATUS_FILE = Path(settings.SII_DATA_PATH if hasattr(__import__('backend.core.config', fromlist=['settings']), 'settings') else '/app/data') / '.backfill_status.json'
-
-
 def _read_backfill_status() -> dict:
     """Read backfill container status written by run_backfill.sh. Returns {} if not active."""
     try:
-        from backend.core.config import settings as _s
-        p = Path(_s.SII_DATA_PATH) / '.backfill_status.json'
+        p = Path(settings.SII_DATA_PATH) / '.backfill_status.json'
         if p.exists():
             data = json.loads(p.read_text())
             if data.get('running'):
