@@ -197,47 +197,34 @@ def _make_compare_pod_excel(data: dict) -> bytes:
 
 def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
     """
-    Build per-POD wide-format Excel.
+    Build per-POD wide-format Excel using write_only mode (fast for large datasets).
 
-    Columns: POD | Filename | DAY | 1 | 2 | … | 96
+    Columns: POD | Source | DAY | 1 | 2 | … | 96
     One row per (pod, forecast_date). Period values are ea_mwh (MWh).
     """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Forecast PODs"
-
-    _header_cell(ws, 1, 1, "POD")
-    _header_cell(ws, 1, 2, "Source")
-    _header_cell(ws, 1, 3, "DAY")
-    for p in range(1, 97):
-        _header_cell(ws, 1, 3 + p, str(p))
-
-    # Pivot: {(pod, date_str): {"source_file": str, 1: val, …, 96: val}}
+    # Build pivot first: {(pod, date_str): {periodo: value, "src": source_type}}
     pivot: dict[tuple[str, str], dict] = {}
     for r in rows:
         key = (r["pod"], str(r["forecast_date"]))
         if key not in pivot:
-            pivot[key] = {"source_file": r.get("source_type") or ""}
+            pivot[key] = {"src": r.get("source_type") or ""}
         val = r["ea_mwh"]
         if val is not None:
             pivot[key][r["periodo"]] = float(val)
 
-    for row_idx, (pod, date_str) in enumerate(sorted(pivot.keys()), 2):
+    # write_only=True: sequential row appends only — no random cell access.
+    # Dramatically faster than regular mode for large sheets (10-20x).
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet("Forecast PODs")
+
+    # Header
+    ws.append(["POD", "Source", "DAY"] + [str(p) for p in range(1, 97)])
+
+    # Data rows
+    for (pod, date_str) in sorted(pivot.keys()):
         entry = pivot[(pod, date_str)]
         day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
-        ws.cell(row=row_idx, column=1, value=pod)
-        ws.cell(row=row_idx, column=2, value=entry["source_file"])
-        ws.cell(row=row_idx, column=3, value=day)
-        for p in range(1, 97):
-            v = entry.get(p)
-            if v is not None:
-                ws.cell(row=row_idx, column=3 + p, value=v)
-
-    ws.column_dimensions["A"].width = 22
-    ws.column_dimensions["B"].width = 36
-    ws.column_dimensions["C"].width = 6
-    for col_idx in range(4, 100):
-        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 8
+        ws.append([pod, entry["src"], day] + [entry.get(p) for p in range(1, 97)])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -548,6 +535,7 @@ async def export_forecast_pods(
     Filename column contains the source XML file name when available.
     """
     schema = schema_for(account_id)
+    t0 = time.monotonic()
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
@@ -559,6 +547,7 @@ async def export_forecast_pods(
             {"acct": account_id, "ma": mese_anno},
         )
         rows = [dict(r._mapping) for r in result.fetchall()]
+    logger.info("export/pods query: %.1fs, %d rows", time.monotonic() - t0, len(rows))
 
     if not rows:
         raise HTTPException(
@@ -566,7 +555,9 @@ async def export_forecast_pods(
             detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
         )
 
+    t1 = time.monotonic()
     xlsx = _make_forecast_pods_excel(rows)
+    logger.info("export/pods excel build: %.1fs, %.1fkB", time.monotonic() - t1, len(xlsx) / 1024)
     safe_month = mese_anno.replace("/", "-")
     filename = f"forecast_pods_{account_id.lower()}_{safe_month}.xlsx"
 
