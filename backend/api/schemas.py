@@ -140,6 +140,10 @@ class SyncStatusOut(BaseModel):
     accounts_done: int | None = None
     accounts_total: int | None = None
     next_run: str | None = None          # ISO timestamp of next scheduled run
+    # File-level progress (within the current account)
+    phase: str | None = None             # "scanning" | "processing" | ""
+    files_done: int | None = None
+    files_total: int | None = None
 
 
 class SyncTriggerOut(BaseModel):

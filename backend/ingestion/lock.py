@@ -25,6 +25,9 @@ class IngestionGuard:
         self.current_account: str | None = None
         self.accounts_done: int = 0
         self.accounts_total: int = 0
+        self.files_done: int = 0
+        self.files_total: int = 0
+        self.phase: str = ""  # "scanning" | "processing" | ""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -46,6 +49,9 @@ class IngestionGuard:
         self.current_account = None
         self.accounts_done = 0
         self.accounts_total = 0
+        self.files_done = 0
+        self.files_total = 0
+        self.phase = ""
         return True
 
     def release(self) -> None:
@@ -56,6 +62,9 @@ class IngestionGuard:
         self.current_account = None
         self.accounts_done = 0
         self.accounts_total = 0
+        self.files_done = 0
+        self.files_total = 0
+        self.phase = ""
 
 
 # Module-level singleton — shared by the scheduler and the API routes

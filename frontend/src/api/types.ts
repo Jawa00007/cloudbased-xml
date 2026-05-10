@@ -61,6 +61,9 @@ export interface SyncStatus {
   accounts_done: number | null
   accounts_total: number | null
   next_run: string | null
+  phase: string | null
+  files_done: number | null
+  files_total: number | null
 }
 
 export interface MissingPeriod {

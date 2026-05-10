@@ -234,15 +234,26 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                 logger.error("Failed to log error for %s: %s", file_name, log_exc)
 
 
-async def ingest_account(account_id: str, data_root: Path | None = None) -> tuple[int, int, int]:
+async def ingest_account(
+    account_id: str,
+    data_root: Path | None = None,
+    on_scan_start: Callable[[], None] | None = None,
+    on_files_found: Callable[[int], None] | None = None,
+    on_file_done: Callable[[], None] | None = None,
+) -> tuple[int, int, int]:
     """Returns (files_ok, files_error, files_skipped)."""
     schema = schema_for(account_id)
     account_root = (data_root or DATA_ROOT) / account_id
+
+    if on_scan_start:
+        on_scan_start()
     entries = walk_account(account_root, account_id)
 
     logger.info(
         "Ingesting %s (%s) — %d files found", account_id, schema, len(entries)
     )
+    if on_files_found:
+        on_files_found(len(entries))
 
     ok = error = skipped = 0
     for i, entry in enumerate(entries, 1):
@@ -254,6 +265,8 @@ async def ingest_account(account_id: str, data_root: Path | None = None) -> tupl
         except Exception as exc:
             logger.error("Unhandled error on %s: %s", entry.file_name, exc)
             error += 1
+        if on_file_done:
+            on_file_done()
 
     logger.info("Done %s — ok:%d errors:%d", account_id, ok, error)
     return ok, error, skipped
@@ -266,6 +279,9 @@ async def ingest_all(
     data_root: Path | None = None,
     on_account: Callable[[str], None] | None = None,
     on_account_done: Callable[[str, int, int, int], None] | None = None,
+    on_scan_start: Callable[[], None] | None = None,
+    on_files_found: Callable[[int], None] | None = None,
+    on_file_done: Callable[[], None] | None = None,
 ) -> None:
     """
     Ingest all accounts found under data_root.
@@ -273,6 +289,7 @@ async def ingest_all(
     on_account: called with account name just before processing starts.
     on_account_done: called with (account, files_ok, files_error, files_skipped)
                      after each account completes.
+    on_scan_start/on_files_found/on_file_done: file-level progress callbacks.
     """
     root = data_root or DATA_ROOT
     if not root.exists():
@@ -286,7 +303,13 @@ async def ingest_all(
             ok = error = skipped = 0
             try:
                 ok, error, skipped = await asyncio.wait_for(
-                    ingest_account(acc_name, data_root=root),
+                    ingest_account(
+                        acc_name,
+                        data_root=root,
+                        on_scan_start=on_scan_start,
+                        on_files_found=on_files_found,
+                        on_file_done=on_file_done,
+                    ),
                     timeout=_ACCOUNT_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:

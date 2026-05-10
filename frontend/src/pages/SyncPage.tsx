@@ -60,13 +60,20 @@ export default function SyncPage() {
   const currentAccount = running?.current_account ?? null
   const triggeredBy = running?.triggered_by ?? null
   const nextRun = first?.next_run ?? null
+  const phase = running?.phase ?? null
+  const filesDone = running?.files_done ?? null
+  const filesTotal = running?.files_total ?? null
 
   // Last completed sync — most recent finished_at across all accounts
   const lastFinishedArr = statuses.map(s => s.finished_at).filter(Boolean).sort()
   const lastFinished = lastFinishedArr.length > 0 ? lastFinishedArr[lastFinishedArr.length - 1] : null
 
-  const progressPct = accountsDone !== null && accountsTotal && accountsTotal > 0
+  const accountProgressPct = accountsDone !== null && accountsTotal && accountsTotal > 0
     ? Math.round((accountsDone / accountsTotal) * 100)
+    : null
+
+  const fileProgressPct = filesDone !== null && filesTotal && filesTotal > 0
+    ? Math.round((filesDone / filesTotal) * 100)
     : null
 
   return (
@@ -214,20 +221,53 @@ export default function SyncPage() {
 
               {currentAccount && (
                 <div className="text-xs text-blue-700">
-                  Processing: <span className="font-semibold">{currentAccount}</span>
+                  Account: <span className="font-semibold">{currentAccount}</span>
                 </div>
               )}
 
-              {accountsDone !== null && accountsTotal !== null && accountsTotal > 0 && (
+              {/* Phase: scanning */}
+              {phase === 'scanning' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[10px] text-blue-600">
+                    <svg className="w-3 h-3 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                    </svg>
+                    Scanning files…
+                  </div>
+                  <div className="w-full h-1.5 bg-blue-200 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-400 rounded-full animate-pulse" style={{ width: '40%' }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Phase: processing — show file-level progress */}
+              {phase === 'processing' && filesDone !== null && filesTotal !== null && filesTotal > 0 && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-[10px] text-blue-600">
-                    <span>{accountsDone} / {accountsTotal} accounts</span>
-                    <span>{progressPct}%</span>
+                    <span>{filesDone.toLocaleString()} / {filesTotal.toLocaleString()} files</span>
+                    <span>{fileProgressPct}%</span>
                   </div>
                   <div className="w-full h-1.5 bg-blue-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                      style={{ width: `${progressPct}%` }}
+                      className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                      style={{ width: `${fileProgressPct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Account-level progress (only useful for multi-account runs) */}
+              {accountsTotal !== null && accountsTotal > 1 && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[10px] text-blue-500">
+                    <span>{accountsDone ?? 0} / {accountsTotal} accounts</span>
+                    <span>{accountProgressPct}%</span>
+                  </div>
+                  <div className="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-400 rounded-full transition-all duration-500"
+                      style={{ width: `${accountProgressPct ?? 0}%` }}
                     />
                   </div>
                 </div>

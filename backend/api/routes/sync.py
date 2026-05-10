@@ -143,12 +143,19 @@ async def _run_ingest(account_id: str | None) -> None:
     accounts_to_run = [account_id] if account_id else list(ACCOUNT_SCHEMA_MAP.keys())
     guard.accounts_total = len(accounts_to_run)
     guard.accounts_done = 0
+    guard.files_done = 0
+    guard.files_total = 0
+    guard.phase = ""
 
     def _on_account(acc: str) -> None:
         guard.current_account = acc
+        guard.files_done = 0
+        guard.files_total = 0
+        guard.phase = "scanning"
 
     def _on_account_done(acc: str, ok: int, err: int, skipped: int) -> None:
         guard.accounts_done += 1
+        guard.phase = ""
         _sync_state[acc] = SyncStatusOut(
             account_id=acc,
             started_at=started_at,
@@ -159,11 +166,32 @@ async def _run_ingest(account_id: str | None) -> None:
             running=False,
         )
 
+    def _on_scan_start() -> None:
+        guard.phase = "scanning"
+        guard.files_done = 0
+        guard.files_total = 0
+
+    def _on_files_found(total: int) -> None:
+        guard.files_total = total
+        guard.files_done = 0
+        guard.phase = "processing"
+
+    def _on_file_done() -> None:
+        guard.files_done += 1
+
     try:
         if account_id:
             guard.current_account = account_id
             try:
-                await asyncio.wait_for(ingest_account(account_id), timeout=_ACCOUNT_TIMEOUT)
+                await asyncio.wait_for(
+                    ingest_account(
+                        account_id,
+                        on_scan_start=_on_scan_start,
+                        on_files_found=_on_files_found,
+                        on_file_done=_on_file_done,
+                    ),
+                    timeout=_ACCOUNT_TIMEOUT,
+                )
             except asyncio.TimeoutError:
                 logger.error("Sync: account %s timed out after %ds", account_id, _ACCOUNT_TIMEOUT)
             guard.accounts_done = 1
@@ -171,6 +199,9 @@ async def _run_ingest(account_id: str | None) -> None:
             await ingest_all(
                 on_account=_on_account,
                 on_account_done=_on_account_done,
+                on_scan_start=_on_scan_start,
+                on_files_found=_on_files_found,
+                on_file_done=_on_file_done,
             )
 
     except Exception as exc:
@@ -303,6 +334,9 @@ async def sync_status(
                 accounts_done=guard.accounts_done,
                 accounts_total=guard.accounts_total,
                 next_run=next_run,
+                phase=guard.phase or None,
+                files_done=guard.files_done if guard.files_total > 0 else None,
+                files_total=guard.files_total if guard.files_total > 0 else None,
             ))
         else:
             data = prev.model_dump()
