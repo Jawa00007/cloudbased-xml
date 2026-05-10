@@ -133,6 +133,9 @@ class SyncStatusOut(BaseModel):
     files_error: int
     files_skipped: int
     running: bool
+    # Live fields — only populated while an ingestion is in progress
+    current_account: str | None = None   # which account is being processed right now
+    triggered_by: str | None = None      # "scheduler" or "api"
 
 
 class SyncTriggerOut(BaseModel):

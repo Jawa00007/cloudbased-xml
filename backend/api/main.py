@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,6 +25,9 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import Gauge
+from prometheus_fastapi_instrumentator import Instrumentator
+from sqlalchemy import text
 
 from backend.api.auth import set_admin_credentials
 from backend.api.routes.accounts import router as accounts_router
@@ -38,7 +42,12 @@ from backend.api.routes.sync import router as sync_router
 from backend.core.config import settings
 from backend.db.session import get_public_session
 from backend.forecast.loss_calculator import DEFAULT_RULES
-from backend.scheduler.jobs import start_scheduler, stop_scheduler
+from backend.ingestion.lock import guard
+from backend.scheduler.jobs import scheduler, start_scheduler, stop_scheduler
+
+# Custom Prometheus gauges — updated on every /api/health call
+_db_health_gauge   = Gauge("sii_db_health",        "DB reachable: 1=ok 0=error")
+_ingestion_running = Gauge("sii_ingestion_running", "Ingestion guard: 1=running 0=idle")
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -123,6 +132,10 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
+# Prometheus instrumentation — must be registered before routers so middleware
+# wraps all requests. Exposes /api/metrics (blocked externally by nginx).
+Instrumentator().instrument(app).expose(app, endpoint="/api/metrics")
+
 # ── Routers — all mounted under /api so nginx can route cleanly ────────────────
 # Frontend is served at / by nginx; API lives at /api/*
 
@@ -141,4 +154,37 @@ app.include_router(forecast_router,    prefix=_API)
 
 @app.get("/api/health", tags=["system"])
 async def health() -> dict:
-    return {"status": "ok", "environment": settings.ENVIRONMENT}
+    """
+    Deep health check — always returns HTTP 200.
+    status="degraded" in the body signals DB unreachable; uptime monitors use HTTP code only.
+    Also updates Prometheus gauges so Grafana dashboards reflect live state.
+    """
+    db_status = "ok"
+    db_latency_ms = None
+    try:
+        t = time.monotonic()
+        async with get_public_session() as s:
+            await asyncio.wait_for(s.execute(text("SELECT 1")), timeout=2.0)
+        db_latency_ms = round((time.monotonic() - t) * 1000, 1)
+    except Exception:
+        db_status = "error"
+
+    _db_health_gauge.set(1 if db_status == "ok" else 0)
+    _ingestion_running.set(1 if guard.is_running() else 0)
+
+    next_run = None
+    job = scheduler.get_job("nightly_ingest")
+    if job and job.next_run_time:
+        next_run = job.next_run_time.isoformat()
+
+    return {
+        "status": "ok" if db_status == "ok" else "degraded",
+        "environment": settings.ENVIRONMENT,
+        "database": {"status": db_status, "latency_ms": db_latency_ms},
+        "scheduler": {"running": scheduler.running, "next_run": next_run},
+        "ingestion": {
+            "running": guard.is_running(),
+            "triggered_by": guard.triggered_by,
+            "current_account": guard.current_account,
+        },
+    }

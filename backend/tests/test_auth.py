@@ -208,19 +208,21 @@ def test_docs_available_in_development(client):
 
 
 def test_docs_hidden_in_production():
-    """Verify docs_url=None when ENVIRONMENT=production."""
-    import os
-    from unittest.mock import patch
-
-    with patch.object(settings, "ENVIRONMENT", "production"):
-        from backend.api.main import _in_production  # imported at module load time
-        # The guard is checked at app creation; since the app is already created,
-        # verify the code path that creates the app uses the setting
-        from backend.core.config import settings as s
-        assert s.ENVIRONMENT != "production" or _in_production, (
-            "When ENVIRONMENT=production, _in_production flag must be True "
-            "so docs_url=None is set"
-        )
+    """
+    _in_production reflects ENVIRONMENT at startup; app.docs_url must match.
+    In dev mode docs are at /docs; in production docs_url is None.
+    """
+    from backend.api.main import _in_production, app
+    # _in_production must equal (ENVIRONMENT == "production") — it's set at module load time
+    assert _in_production == (settings.ENVIRONMENT == "production"), (
+        f"_in_production ({_in_production}) does not match "
+        f"ENVIRONMENT={settings.ENVIRONMENT!r}"
+    )
+    # Verify the FastAPI app was created with the correct docs_url
+    if _in_production:
+        assert app.docs_url is None, "docs_url must be None in production"
+    else:
+        assert app.docs_url == "/docs", "docs_url must be /docs in development"
 
 
 # ── SQL injection resistance ──────────────────────────────────────────────────
@@ -235,7 +237,7 @@ SQL_INJECTION_PAYLOADS = [
 
 
 @pytest.mark.parametrize("payload", SQL_INJECTION_PAYLOADS)
-def test_sql_injection_in_account_param_does_not_500(client, valid_api_key):
+def test_sql_injection_in_account_param_does_not_500(client, valid_api_key, payload):
     """Parameterized queries should handle injection payloads without server errors."""
     resp = client.get(
         f"/api/pods?account={payload}",

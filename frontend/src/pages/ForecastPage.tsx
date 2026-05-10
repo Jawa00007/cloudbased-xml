@@ -8,7 +8,7 @@ import {
   fetchAccounts, fetchPods, fetchForecast, generateForecast, fetchForecastStatus,
   fetchForecastCompare, fetchForecastCompareDP,
   fetchAnagraficaMonths,
-  downloadForecastExcel, downloadCompareDPExcel, downloadComparePodExcel,
+  downloadForecastExcel, downloadForecastPodsExcel, downloadCompareDPExcel, downloadComparePodExcel,
 } from '../api/client'
 import type { ForecastGenerateResult } from '../api/types'
 import { itNum, itMwh } from '../utils/format'
@@ -47,6 +47,7 @@ function GenerateTab() {
   const [selectedPod, setSelectedPod] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
+  const [downloadingPods, setDownloadingPods] = useState(false)
 
   // Async job state
   const [jobId, setJobId] = useState<string | null>(null)
@@ -148,6 +149,17 @@ function GenerateTab() {
     }
   }
 
+  async function handleDownloadPods() {
+    setDownloadingPods(true)
+    try {
+      await downloadForecastPodsExcel(accountId, meseAnno)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setDownloadingPods(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Controls */}
@@ -228,12 +240,47 @@ function GenerateTab() {
               </svg>
               {downloading ? 'Downloading…' : 'Download Excel (by DP)'}
             </button>
+            <button
+              onClick={handleDownloadPods}
+              disabled={downloadingPods}
+              className="flex items-center gap-2 px-4 py-2.5 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+              {downloadingPods ? 'Downloading…' : 'Download Excel (per POD)'}
+            </button>
           </div>
         )}
       </div>
 
       {forecast.length > 0 && (
         <>
+          {/* Download toolbar — always visible when data exists */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs text-slate-400 font-medium uppercase tracking-wide mr-1">Download:</span>
+            <button
+              onClick={handleDownload}
+              disabled={downloading || !accountId}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+              {downloading ? 'Downloading…' : 'By dispatching point'}
+            </button>
+            <button
+              onClick={handleDownloadPods}
+              disabled={downloadingPods || !accountId}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 text-white text-xs font-medium rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+              {downloadingPods ? 'Downloading…' : 'Per POD (96 periods)'}
+            </button>
+          </div>
+
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[

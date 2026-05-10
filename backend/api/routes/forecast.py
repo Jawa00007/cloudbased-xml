@@ -4,6 +4,7 @@ Forecast routes.
 POST /forecast/generate                     — start forecast job (returns 202 + job_id immediately)
 GET  /forecast/status/{job_id}              — poll job status
 GET  /forecast/export                       — download forecast as Excel by dispatching point
+GET  /forecast/export/pods                  — download forecast as Excel per-POD wide format (POD|Filename|DAY|P1…P96)
 GET  /forecast/compare                      — year-over-year comparison for ONE pod + date range
 GET  /forecast/compare/export               — download single-POD comparison as Excel
 GET  /forecast/compare-dp                   — year-over-year comparison aggregated by DP (all / N pods)
@@ -188,6 +189,55 @@ def _make_compare_pod_excel(data: dict) -> bytes:
     widths = [20, 14, 20, 14, 14, 12]
     for col_idx, w in enumerate(widths, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
+    """
+    Build per-POD wide-format Excel.
+
+    Columns: POD | Filename | DAY | 1 | 2 | … | 96
+    One row per (pod, forecast_date). Period values are ea_mwh (MWh).
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Forecast PODs"
+
+    _header_cell(ws, 1, 1, "POD")
+    _header_cell(ws, 1, 2, "Filename")
+    _header_cell(ws, 1, 3, "DAY")
+    for p in range(1, 97):
+        _header_cell(ws, 1, 3 + p, str(p))
+
+    # Pivot: {(pod, date_str): {"source_file": str, 1: val, …, 96: val}}
+    pivot: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["pod"], str(r["forecast_date"]))
+        if key not in pivot:
+            pivot[key] = {"source_file": r.get("source_file") or ""}
+        val = r["ea_mwh"]
+        if val is not None:
+            pivot[key][r["periodo"]] = float(val)
+
+    for row_idx, (pod, date_str) in enumerate(sorted(pivot.keys()), 2):
+        entry = pivot[(pod, date_str)]
+        day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
+        ws.cell(row=row_idx, column=1, value=pod)
+        ws.cell(row=row_idx, column=2, value=entry["source_file"])
+        ws.cell(row=row_idx, column=3, value=day)
+        for p in range(1, 97):
+            v = entry.get(p)
+            if v is not None:
+                ws.cell(row=row_idx, column=3 + p, value=v)
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 36
+    ws.column_dimensions["C"].width = 6
+    for col_idx in range(4, 100):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = 8
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -474,6 +524,51 @@ async def export_compare_dp(
 
     xlsx = _make_compare_dp_excel(data)
     filename = f"compare_{account_id.lower()}_{from_date}_{to_date}.xlsx"
+
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get(
+    "/export/pods",
+    summary="Download forecast as Excel in per-POD wide format (one row per POD+date, 96 period columns)",
+)
+async def export_forecast_pods(
+    account_id: str,
+    mese_anno: str,
+    _: Auth,
+) -> StreamingResponse:
+    """
+    Downloads forecast_periods as Excel wide format:
+    POD | Filename | DAY | 1 | 2 | … | 96
+    One row per (POD, date). Values are ea_mwh (MWh).
+    Filename column contains the source XML file name when available.
+    """
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        result = await session.execute(
+            text("""
+                SELECT pod, forecast_date, periodo, ea_mwh, source_file
+                FROM forecast_periods
+                WHERE account_id = :acct AND mese_anno = :ma
+                ORDER BY pod, forecast_date, periodo
+            """),
+            {"acct": account_id, "ma": mese_anno},
+        )
+        rows = [dict(r._mapping) for r in result.fetchall()]
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
+        )
+
+    xlsx = _make_forecast_pods_excel(rows)
+    safe_month = mese_anno.replace("/", "-")
+    filename = f"forecast_pods_{account_id.lower()}_{safe_month}.xlsx"
 
     return StreamingResponse(
         io.BytesIO(xlsx),

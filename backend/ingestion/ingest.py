@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # psycopg requires SelectorEventLoop on Windows (not the default ProactorEventLoop)
@@ -255,14 +256,40 @@ async def ingest_account(account_id: str, data_root: Path | None = None) -> None
     logger.info("Done %s — ok:%d errors:%d", account_id, ok, error)
 
 
-async def ingest_all(data_root: Path | None = None) -> None:
+_ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
+
+
+async def ingest_all(
+    data_root: Path | None = None,
+    on_account: Callable[[str], None] | None = None,
+) -> None:
+    """
+    Ingest all accounts found under data_root.
+
+    on_account: optional callback invoked with the account name just before
+    each account starts — used by callers to update live progress state.
+
+    Each account is wrapped with a 1-hour timeout so a single slow or
+    stuck account cannot block the entire nightly run indefinitely.
+    """
     root = data_root or DATA_ROOT
     if not root.exists():
         logger.warning("SII_DATA_PATH %r does not exist — skipping ingestion", str(root))
         return
     for account_dir in sorted(root.iterdir()):
         if account_dir.is_dir() and not account_dir.name.startswith("#"):
-            await ingest_account(account_dir.name, data_root=root)
+            if on_account:
+                on_account(account_dir.name)
+            try:
+                await asyncio.wait_for(
+                    ingest_account(account_dir.name, data_root=root),
+                    timeout=_ACCOUNT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Ingestion timeout: %s exceeded %ds — moving to next account",
+                    account_dir.name, _ACCOUNT_TIMEOUT_SECONDS,
+                )
 
 
 def main() -> None:

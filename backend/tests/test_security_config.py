@@ -80,6 +80,31 @@ def test_nginx_auth_rate_limit_on_auth_endpoint():
     )
 
 
+def test_nginx_blocks_metrics_externally():
+    nginx = _nginx()
+    assert "/api/metrics" in nginx, (
+        "nginx.conf must have a location block for /api/metrics"
+    )
+    assert "deny all" in nginx, (
+        "nginx.conf must use 'deny all' to block external access to /api/metrics"
+    )
+
+
+def test_nginx_has_grafana_location():
+    nginx = _nginx()
+    assert "grafana" in nginx.lower(), (
+        "nginx.conf must have a /grafana/ proxy location for the Grafana dashboard"
+    )
+
+
+def test_nginx_grafana_is_auth_protected():
+    nginx = _nginx()
+    assert nginx.count("auth_basic") >= 2, (
+        "Both /adminer/ and /grafana/ must be protected with auth_basic "
+        f"(found {nginx.count('auth_basic')} auth_basic directive(s))"
+    )
+
+
 # ── docker-compose.yml ─────────────────────────────────────────────────────────
 
 def _compose() -> str:
