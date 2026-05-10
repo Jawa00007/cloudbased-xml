@@ -198,6 +198,12 @@ export function downloadForecastPodsExcel(account_id: string, mese_anno: string)
   return _triggerDownload(`${BASE}/forecast/export/pods?${params}`, `forecast_pods_${account_id.toLowerCase()}_${safe}.xlsx`)
 }
 
+export function downloadMeasurementsWideExcel(account_id: string, mese_anno: string): Promise<void> {
+  const params = new URLSearchParams({ account_id, mese_anno })
+  const safe = mese_anno.replace('/', '-')
+  return _triggerDownload(`${BASE}/forecast/export/measurements?${params}`, `measurements_${account_id.toLowerCase()}_${safe}.xlsx`)
+}
+
 export function downloadCompareDPExcel(
   account_id: string,
   from_date: string,

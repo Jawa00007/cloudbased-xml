@@ -8,7 +8,8 @@ import {
   fetchAccounts, fetchPods, fetchForecast, generateForecast, fetchForecastStatus,
   fetchForecastCompare, fetchForecastCompareDP,
   fetchAnagraficaMonths,
-  downloadForecastExcel, downloadForecastPodsExcel, downloadCompareDPExcel, downloadComparePodExcel,
+  downloadForecastExcel, downloadForecastPodsExcel, downloadMeasurementsWideExcel,
+  downloadCompareDPExcel, downloadComparePodExcel,
 } from '../api/client'
 import type { ForecastGenerateResult } from '../api/types'
 import { itNum, itMwh } from '../utils/format'
@@ -48,6 +49,7 @@ function GenerateTab() {
   const [error, setError] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [downloadingPods, setDownloadingPods] = useState(false)
+  const [downloadingMeasurements, setDownloadingMeasurements] = useState(false)
 
   // Async job state
   const [jobId, setJobId] = useState<string | null>(null)
@@ -160,6 +162,23 @@ function GenerateTab() {
     }
   }
 
+  // Source month = same month one year earlier (what the forecast engine actually uses)
+  function sourceMonth(ma: string): string {
+    const [mm, yyyy] = ma.split('/')
+    return `${mm}/${parseInt(yyyy) - 1}`
+  }
+
+  async function handleDownloadMeasurements() {
+    setDownloadingMeasurements(true)
+    try {
+      await downloadMeasurementsWideExcel(accountId, sourceMonth(meseAnno))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setDownloadingMeasurements(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Controls */}
@@ -268,7 +287,7 @@ function GenerateTab() {
         <>
           {/* Download toolbar — always visible when data exists */}
           <div className="flex flex-wrap gap-2 items-center">
-            <span className="text-xs text-slate-400 font-medium uppercase tracking-wide mr-1">Download:</span>
+            <span className="text-xs text-slate-400 font-medium uppercase tracking-wide mr-1">Forecast:</span>
             <button
               onClick={handleDownload}
               disabled={downloading || !accountId}
@@ -288,6 +307,19 @@ function GenerateTab() {
                 <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
               </svg>
               {downloadingPods ? 'Downloading…' : 'Per POD (96 periods)'}
+            </button>
+            <span className="text-xs text-slate-300 mx-1">|</span>
+            <span className="text-xs text-slate-400 font-medium uppercase tracking-wide mr-1">Source data:</span>
+            <button
+              onClick={handleDownloadMeasurements}
+              disabled={downloadingMeasurements || !accountId}
+              title={`Download actual measurements for ${meseAnno ? sourceMonth(meseAnno) : '?'} (the data used to build this forecast)`}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 text-white text-xs font-medium rounded-lg hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+              {downloadingMeasurements ? 'Downloading…' : `Measurements ${meseAnno ? sourceMonth(meseAnno) : ''} (96 periods)`}
             </button>
           </div>
 

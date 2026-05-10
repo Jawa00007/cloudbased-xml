@@ -5,6 +5,7 @@ POST /forecast/generate                     — start forecast job (returns 202 
 GET  /forecast/status/{job_id}              — poll job status
 GET  /forecast/export                       — download forecast as Excel by dispatching point
 GET  /forecast/export/pods                  — download forecast as Excel per-POD wide format (POD|Filename|DAY|P1…P96)
+GET  /forecast/export/measurements          — download actual measurements (source data) in same wide format
 GET  /forecast/compare                      — year-over-year comparison for ONE pod + date range
 GET  /forecast/compare/export               — download single-POD comparison as Excel
 GET  /forecast/compare-dp                   — year-over-year comparison aggregated by DP (all / N pods)
@@ -225,6 +226,43 @@ def _make_forecast_pods_excel(rows: list[dict]) -> bytes:
         entry = pivot[(pod, date_str)]
         day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
         ws.append([pod, entry["src"], day] + [entry.get(p) for p in range(1, 97)])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _make_measurements_wide_excel(rows: list[dict]) -> bytes:
+    """
+    Build actual-measurements wide Excel using write_only mode.
+
+    Columns: POD | TipoDato | DAY | 1 | 2 | … | 96
+    One row per (pod, data_misura). Values are ea_kwh (kWh) from measurements table.
+    Preferred tipo_dato=E; S rows are included only when no E row exists for that POD+date.
+    """
+    # De-duplicate: keep E over S for same (pod, date)
+    pivot: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r["pod"], str(r["data_misura"]))
+        existing = pivot.get(key)
+        # E takes priority over S
+        if existing is None or (r["tipo_dato"] == "E" and existing.get("tipo_dato") != "E"):
+            pivot[key] = {"tipo_dato": r["tipo_dato"]}
+        elif existing.get("tipo_dato") == "E" and r["tipo_dato"] != "E":
+            continue  # skip S when E already present
+        val = r["ea_kwh"]
+        if val is not None:
+            pivot[key][r["periodo"]] = float(val)
+            pivot[key]["tipo_dato"] = r["tipo_dato"] if pivot[key].get("tipo_dato") != "E" else "E"
+
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet("Measurements")
+    ws.append(["POD", "TipoDato", "DAY"] + [str(p) for p in range(1, 97)])
+
+    for (pod, date_str) in sorted(pivot.keys()):
+        entry = pivot[(pod, date_str)]
+        day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
+        ws.append([pod, entry.get("tipo_dato", ""), day] + [entry.get(p) for p in range(1, 97)])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -561,6 +599,57 @@ async def export_forecast_pods(
     safe_month = mese_anno.replace("/", "-")
     filename = f"forecast_pods_{account_id.lower()}_{safe_month}.xlsx"
 
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get(
+    "/export/measurements",
+    summary="Download actual measurements (source data) in per-POD wide format",
+)
+async def export_measurements_wide(
+    account_id: str,
+    mese_anno: str,
+    _: Auth,
+) -> StreamingResponse:
+    """
+    Downloads actual measured ea_kwh values from the measurements table in wide format:
+    POD | TipoDato | DAY | 1 | 2 | … | 96
+
+    This is the source data the forecast engine uses (tipo_dato E preferred, S as fallback).
+    To see what April 2026 forecast is based on, request mese_anno=04/2025.
+    """
+    schema = schema_for(account_id)
+    t0 = time.monotonic()
+    async with get_session(schema) as session:
+        result = await session.execute(
+            text("""
+                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato
+                FROM measurements
+                WHERE account_id = :acct AND mese_anno = :ma
+                  AND tipo_dato IN ('E', 'S')
+                ORDER BY pod, data_misura, tipo_dato DESC, periodo
+            """),
+            {"acct": account_id, "ma": mese_anno},
+        )
+        rows = [dict(r._mapping) for r in result.fetchall()]
+    logger.info("export/measurements query: %.1fs, %d rows", time.monotonic() - t0, len(rows))
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No measurement data for {account_id} / {mese_anno}.",
+        )
+
+    t1 = time.monotonic()
+    xlsx = _make_measurements_wide_excel(rows)
+    logger.info("export/measurements excel: %.1fs, %.1fkB", time.monotonic() - t1, len(xlsx) / 1024)
+
+    safe_month = mese_anno.replace("/", "-")
+    filename = f"measurements_{account_id.lower()}_{safe_month}.xlsx"
     return StreamingResponse(
         io.BytesIO(xlsx),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
