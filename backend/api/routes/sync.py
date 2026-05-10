@@ -22,22 +22,70 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from backend.api.auth import require_auth
 from backend.api.schemas import SyncStatusOut, SyncTriggerOut
+from backend.core.config import settings
 from backend.ingestion.ingest import ACCOUNT_SCHEMA_MAP, ingest_account, ingest_all
 from backend.ingestion.lock import guard
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sync"])
 
+# Persist state across restarts in the data volume
+_STATE_FILE = Path(settings.SII_DATA_PATH) / ".sync_state.json"
+
 # Per-account historical results (last completed run)
 _sync_state: dict[str, SyncStatusOut] = {}
+
+
+def _load_state() -> None:
+    """Load persisted sync state from disk on startup."""
+    try:
+        if _STATE_FILE.exists():
+            raw = json.loads(_STATE_FILE.read_text())
+            for acc, rec in raw.items():
+                _sync_state[acc] = SyncStatusOut(
+                    account_id=rec["account_id"],
+                    started_at=rec.get("started_at"),
+                    finished_at=rec.get("finished_at"),
+                    files_ok=rec.get("files_ok", 0),
+                    files_error=rec.get("files_error", 0),
+                    files_skipped=rec.get("files_skipped", 0),
+                    running=False,
+                )
+    except Exception as exc:
+        logger.warning("Could not load sync state: %s", exc)
+
+
+def _save_state() -> None:
+    """Persist current sync state to disk."""
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            acc: {
+                "account_id": s.account_id,
+                "started_at": s.started_at.isoformat() if s.started_at else None,
+                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                "files_ok": s.files_ok,
+                "files_error": s.files_error,
+                "files_skipped": s.files_skipped,
+            }
+            for acc, s in _sync_state.items()
+        }
+        _STATE_FILE.write_text(json.dumps(payload))
+    except Exception as exc:
+        logger.warning("Could not save sync state: %s", exc)
+
+
+_load_state()
 
 _ACCOUNT_TIMEOUT = 3600  # seconds — matches ingest_all's internal timeout
 
@@ -60,7 +108,24 @@ async def _run_ingest(account_id: str | None) -> None:
     The guard must already be claimed by the calling endpoint before this runs.
     """
     started_at = guard.started_at or datetime.now(timezone.utc)
-    accounts_to_update = [account_id] if account_id else list(ACCOUNT_SCHEMA_MAP.keys())
+    accounts_to_run = [account_id] if account_id else list(ACCOUNT_SCHEMA_MAP.keys())
+    guard.accounts_total = len(accounts_to_run)
+    guard.accounts_done = 0
+
+    def _on_account(acc: str) -> None:
+        guard.current_account = acc
+
+    def _on_account_done(acc: str, ok: int, err: int, skipped: int) -> None:
+        guard.accounts_done += 1
+        _sync_state[acc] = SyncStatusOut(
+            account_id=acc,
+            started_at=started_at,
+            finished_at=None,   # still running overall; will be set in finally
+            files_ok=ok,
+            files_error=err,
+            files_skipped=skipped,
+            running=False,
+        )
 
     try:
         if account_id:
@@ -69,8 +134,12 @@ async def _run_ingest(account_id: str | None) -> None:
                 await asyncio.wait_for(ingest_account(account_id), timeout=_ACCOUNT_TIMEOUT)
             except asyncio.TimeoutError:
                 logger.error("Sync: account %s timed out after %ds", account_id, _ACCOUNT_TIMEOUT)
+            guard.accounts_done = 1
         else:
-            await ingest_all(on_account=lambda acc: setattr(guard, "current_account", acc))
+            await ingest_all(
+                on_account=_on_account,
+                on_account_done=_on_account_done,
+            )
 
     except Exception as exc:
         logger.error("Sync error: %s", exc)
@@ -78,7 +147,7 @@ async def _run_ingest(account_id: str | None) -> None:
     finally:
         guard.release()
         finished = datetime.now(timezone.utc)
-        for acc in accounts_to_update:
+        for acc in accounts_to_run:
             prev = _sync_state.get(acc, _make_status(acc))
             _sync_state[acc] = SyncStatusOut(
                 account_id=acc,
@@ -89,6 +158,7 @@ async def _run_ingest(account_id: str | None) -> None:
                 files_skipped=prev.files_skipped,
                 running=False,
             )
+        _save_state()
 
 
 def _conflict_detail() -> str:
@@ -145,11 +215,24 @@ async def sync_status(
     Returns per-account ingestion status.
 
     While a run is in progress, running=True is shown for all accounts
-    along with current_account (the account being processed right now)
-    and triggered_by ("scheduler" or "api").
+    along with current_account, elapsed_seconds, and accounts_done/total.
     """
+    from backend.scheduler.jobs import scheduler
+
     running = guard.is_running()
     result: list[SyncStatusOut] = []
+
+    elapsed: int | None = None
+    if running and guard.started_at:
+        elapsed = int((datetime.now(timezone.utc) - guard.started_at).total_seconds())
+
+    next_run: str | None = None
+    try:
+        job = scheduler.get_job("nightly_ingest")
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+    except Exception:
+        pass
 
     for acc in ACCOUNT_SCHEMA_MAP:
         prev = _sync_state.get(acc, _make_status(acc))
@@ -164,8 +247,15 @@ async def sync_status(
                 running=True,
                 current_account=guard.current_account,
                 triggered_by=guard.triggered_by,
+                elapsed_seconds=elapsed,
+                accounts_done=guard.accounts_done,
+                accounts_total=guard.accounts_total,
+                next_run=next_run,
             ))
         else:
-            result.append(prev)
+            result.append(SyncStatusOut(
+                **prev.model_dump(),
+                next_run=next_run,
+            ))
 
     return result

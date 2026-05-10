@@ -234,7 +234,8 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                 logger.error("Failed to log error for %s: %s", file_name, log_exc)
 
 
-async def ingest_account(account_id: str, data_root: Path | None = None) -> None:
+async def ingest_account(account_id: str, data_root: Path | None = None) -> tuple[int, int, int]:
+    """Returns (files_ok, files_error, files_skipped)."""
     schema = schema_for(account_id)
     account_root = (data_root or DATA_ROOT) / account_id
     entries = walk_account(account_root, account_id)
@@ -243,7 +244,7 @@ async def ingest_account(account_id: str, data_root: Path | None = None) -> None
         "Ingesting %s (%s) — %d files found", account_id, schema, len(entries)
     )
 
-    ok = error = 0
+    ok = error = skipped = 0
     for i, entry in enumerate(entries, 1):
         if i % 500 == 0:
             logger.info("  Progress: %d / %d", i, len(entries))
@@ -255,6 +256,7 @@ async def ingest_account(account_id: str, data_root: Path | None = None) -> None
             error += 1
 
     logger.info("Done %s — ok:%d errors:%d", account_id, ok, error)
+    return ok, error, skipped
 
 
 _ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
@@ -263,15 +265,14 @@ _ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
 async def ingest_all(
     data_root: Path | None = None,
     on_account: Callable[[str], None] | None = None,
+    on_account_done: Callable[[str, int, int, int], None] | None = None,
 ) -> None:
     """
     Ingest all accounts found under data_root.
 
-    on_account: optional callback invoked with the account name just before
-    each account starts — used by callers to update live progress state.
-
-    Each account is wrapped with a 1-hour timeout so a single slow or
-    stuck account cannot block the entire nightly run indefinitely.
+    on_account: called with account name just before processing starts.
+    on_account_done: called with (account, files_ok, files_error, files_skipped)
+                     after each account completes.
     """
     root = data_root or DATA_ROOT
     if not root.exists():
@@ -279,18 +280,22 @@ async def ingest_all(
         return
     for account_dir in sorted(root.iterdir()):
         if account_dir.is_dir() and not account_dir.name.startswith("#"):
+            acc_name = account_dir.name
             if on_account:
-                on_account(account_dir.name)
+                on_account(acc_name)
+            ok = error = skipped = 0
             try:
-                await asyncio.wait_for(
-                    ingest_account(account_dir.name, data_root=root),
+                ok, error, skipped = await asyncio.wait_for(
+                    ingest_account(acc_name, data_root=root),
                     timeout=_ACCOUNT_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 logger.error(
                     "Ingestion timeout: %s exceeded %ds — moving to next account",
-                    account_dir.name, _ACCOUNT_TIMEOUT_SECONDS,
+                    acc_name, _ACCOUNT_TIMEOUT_SECONDS,
                 )
+            if on_account_done:
+                on_account_done(acc_name, ok, error, skipped)
 
 
 def main() -> None:

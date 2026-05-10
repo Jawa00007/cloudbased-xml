@@ -55,6 +55,12 @@ export interface SyncStatus {
   files_error: number
   files_skipped: number
   running: boolean
+  current_account: string | null
+  triggered_by: string | null
+  elapsed_seconds: number | null
+  accounts_done: number | null
+  accounts_total: number | null
+  next_run: string | null
 }
 
 export interface MissingPeriod {

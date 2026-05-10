@@ -136,6 +136,10 @@ class SyncStatusOut(BaseModel):
     # Live fields — only populated while an ingestion is in progress
     current_account: str | None = None   # which account is being processed right now
     triggered_by: str | None = None      # "scheduler" or "api"
+    elapsed_seconds: int | None = None
+    accounts_done: int | None = None
+    accounts_total: int | None = None
+    next_run: str | None = None          # ISO timestamp of next scheduled run
 
 
 class SyncTriggerOut(BaseModel):

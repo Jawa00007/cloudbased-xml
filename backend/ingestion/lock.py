@@ -23,6 +23,8 @@ class IngestionGuard:
         self.triggered_by: str | None = None
         self.started_at: datetime | None = None
         self.current_account: str | None = None
+        self.accounts_done: int = 0
+        self.accounts_total: int = 0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -42,6 +44,8 @@ class IngestionGuard:
         self.triggered_by = triggered_by
         self.started_at = datetime.now(timezone.utc)
         self.current_account = None
+        self.accounts_done = 0
+        self.accounts_total = 0
         return True
 
     def release(self) -> None:
@@ -50,6 +54,8 @@ class IngestionGuard:
         self.triggered_by = None
         self.started_at = None
         self.current_account = None
+        self.accounts_done = 0
+        self.accounts_total = 0
 
 
 # Module-level singleton — shared by the scheduler and the API routes
