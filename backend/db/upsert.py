@@ -35,6 +35,10 @@ from backend.parser.totalizer_parser import TotalizerRecord
 
 # ── Curve records ──────────────────────────────────────────────────────────────
 
+# 19 columns per curve row → 65535 / 19 = 3449; use 3400 to stay safely under.
+_CURVE_CHUNK = 3_400
+
+
 async def upsert_curve_records(
     session: AsyncSession,
     records: list[CurveRecord],
@@ -62,8 +66,13 @@ async def upsert_curve_records(
     target = MeasurementSecondary if tipo_dato == "S" else Measurement
     table = target.__table__
 
-    rows = [
-        {
+    # Deduplicate within this batch — a single XML may contain duplicate
+    # (pod, data_misura, periodo, tipo_dato) rows (CardinalityViolation).
+    # Keep the row with the highest (file_timestamp, progressivo).
+    seen: dict[tuple, dict] = {}
+    for r in records:
+        key = (r.pod, r.data_misura, r.periodo, r.tipo_dato)
+        row = {
             "account_id": account_id,
             "pod": r.pod,
             "data_misura": r.data_misura,
@@ -84,47 +93,58 @@ async def upsert_curve_records(
             "progressivo": progressivo,
             "source_file": source_file,
         }
-        for r in records
-    ]
+        if key not in seen:
+            seen[key] = row
+        else:
+            existing = seen[key]
+            # Replace if new row has higher priority
+            new_ts = file_timestamp or datetime.min
+            old_ts = existing["file_timestamp"] or datetime.min
+            if new_ts > old_ts or (new_ts == old_ts and progressivo > (existing["progressivo"] or 0)):
+                seen[key] = row
 
-    stmt = (
-        insert(table)
-        .values(rows)
-        .on_conflict_do_update(
-            # Use index_elements instead of constraint name — the DB may have
-            # created the constraint with a schema-prefixed name (e.g.
-            # uq_bat_measurements_key) which differs from the model's name.
-            index_elements=["account_id", "pod", "data_misura", "periodo", "tipo_dato"],
-            set_={
-                "ea_kwh": insert(table).excluded.ea_kwh,
-                "er_kvarh": insert(table).excluded.er_kvarh,
-                "dst": insert(table).excluded.dst,
-                "raccolta": insert(table).excluded.raccolta,
-                "validato": insert(table).excluded.validato,
-                "pot_max": insert(table).excluded.pot_max,
-                "causa_ostativa": insert(table).excluded.causa_ostativa,
-                "cod_flusso": insert(table).excluded.cod_flusso,
-                "file_timestamp": insert(table).excluded.file_timestamp,
-                "progressivo": insert(table).excluded.progressivo,
-                "source_file": insert(table).excluded.source_file,
-            },
-            where=(
-                # New file wins if it has a later timestamp
-                (insert(table).excluded.file_timestamp > table.c.file_timestamp)
-                | (
-                    # Or equal timestamp but higher progressivo
-                    (insert(table).excluded.file_timestamp == table.c.file_timestamp)
-                    & (insert(table).excluded.progressivo > table.c.progressivo)
-                )
-            ),
+    rows = list(seen.values())
+
+    def _make_stmt(chunk: list[dict]):
+        return (
+            insert(table)
+            .values(chunk)
+            .on_conflict_do_update(
+                # Use index_elements instead of constraint name — the DB may have
+                # created the constraint with a schema-prefixed name (e.g.
+                # uq_bat_measurements_key) which differs from the model's name.
+                index_elements=["account_id", "pod", "data_misura", "periodo", "tipo_dato"],
+                set_={
+                    "ea_kwh": insert(table).excluded.ea_kwh,
+                    "er_kvarh": insert(table).excluded.er_kvarh,
+                    "dst": insert(table).excluded.dst,
+                    "raccolta": insert(table).excluded.raccolta,
+                    "validato": insert(table).excluded.validato,
+                    "pot_max": insert(table).excluded.pot_max,
+                    "causa_ostativa": insert(table).excluded.causa_ostativa,
+                    "cod_flusso": insert(table).excluded.cod_flusso,
+                    "file_timestamp": insert(table).excluded.file_timestamp,
+                    "progressivo": insert(table).excluded.progressivo,
+                    "source_file": insert(table).excluded.source_file,
+                },
+                where=(
+                    (insert(table).excluded.file_timestamp > table.c.file_timestamp)
+                    | (
+                        (insert(table).excluded.file_timestamp == table.c.file_timestamp)
+                        & (insert(table).excluded.progressivo > table.c.progressivo)
+                    )
+                ),
+            )
         )
-    )
 
-    result = await session.execute(stmt)
-    # rowcount = rows affected (inserted + updated); skipped = total - affected
-    affected = result.rowcount
-    skipped = len(rows) - affected
-    return affected, skipped
+    total_affected = 0
+    for i in range(0, len(rows), _CURVE_CHUNK):
+        chunk = rows[i : i + _CURVE_CHUNK]
+        result = await session.execute(_make_stmt(chunk))
+        total_affected += result.rowcount
+
+    skipped = len(rows) - total_affected
+    return total_affected, skipped
 
 
 # ── Totalizer records ──────────────────────────────────────────────────────────
