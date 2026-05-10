@@ -91,7 +91,10 @@ async def upsert_curve_records(
         insert(table)
         .values(rows)
         .on_conflict_do_update(
-            constraint=f"uq_{table.name}_key",
+            # Use index_elements instead of constraint name — the DB may have
+            # created the constraint with a schema-prefixed name (e.g.
+            # uq_bat_measurements_key) which differs from the model's name.
+            index_elements=["account_id", "pod", "data_misura", "periodo", "tipo_dato"],
             set_={
                 "ea_kwh": insert(table).excluded.ea_kwh,
                 "er_kvarh": insert(table).excluded.er_kvarh,

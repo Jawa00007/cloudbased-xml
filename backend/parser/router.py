@@ -9,6 +9,11 @@ Ties together:
 
 Returns a ParseResult that the ingestion pipeline hands off to the DB layer.
 VNO2G dual files produce both curve and totalizer records in one result.
+
+route_file() accepts either:
+  - route_file(file_path)                       — read from disk (tests / CLI)
+  - route_file(xml_bytes=b"...", file_name="x") — parse from in-memory bytes
+                                                   (production: no temp file)
 """
 
 from __future__ import annotations
@@ -41,34 +46,47 @@ class ParseResult:
     annullamento_pods: list[str] = field(default_factory=list)
 
 
-def route_file(file_path: Path) -> ParseResult:
+def route_file(
+    file_path: Path | None = None,
+    *,
+    xml_bytes: bytes | None = None,
+    file_name: str | None = None,
+) -> ParseResult:
     """
-    Parse a single SII XML file from disk.
+    Parse a single SII XML file.
+
+    Two calling conventions:
+      route_file(Path("/app/data/..."))               — reads from disk
+      route_file(xml_bytes=b"...", file_name="x.xml") — parses from memory
 
     Steps:
       1. Parse filename metadata
-      2. Parse XML
+      2. Parse XML (from disk or from bytes)
       3. Detect shape
       4. Dispatch to correct parser
       5. Handle VNO2G dual output and Flusso 2 annullamento
-
-    Args:
-        file_path: Absolute path to the .xml file.
-
-    Returns:
-        ParseResult with all extracted records.
 
     Raises:
         ValueError: On filename pattern mismatch, missing required fields,
                     or invalid period counts. Caller must catch and log to
                     the `files` table — never silently discard.
     """
-    filename_meta = parse_filename(file_path.name)
+    if xml_bytes is not None:
+        # In-memory path — no disk read, no temp file
+        _file_name = file_name or ""
+        root = ET.fromstring(xml_bytes)
+    elif file_path is not None:
+        # Disk path — used by tests and CLI
+        _file_name = file_path.name
+        root = ET.parse(file_path).getroot()
+    else:
+        raise ValueError("route_file requires either file_path or xml_bytes")
+
+    filename_meta = parse_filename(_file_name)
     cod_flusso = filename_meta.cod_flusso
     mese_anno = filename_meta.mese_anno
-    source_file = file_path.name
+    source_file = _file_name
 
-    root = ET.parse(file_path).getroot()
     shape = detect_shape(cod_flusso, root)
 
     result = ParseResult(filename_meta=filename_meta, shape=shape)

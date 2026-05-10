@@ -5,11 +5,16 @@ Usage:
     py -m backend.ingestion.ingest --account=BAT
     py -m backend.ingestion.ingest --all
 
-For each file:
-  1. Check if already in files table (skip duplicates)
-  2. Parse filename + XML
-  3. Upsert records into correct table
-  4. Log result in files table
+Pipeline per file:
+  1. Fast count of files (directory listing only — no ZIP opening)
+  2. Pre-load all already-processed filenames in ONE DB query per account
+  3. Walk files as a generator (no full list materialisation)
+  4. For each new file: read ZIP bytes in-memory, parse, upsert, log
+  5. Process _CONCURRENCY files concurrently (asyncio semaphore)
+     in chunks of _CHUNK to keep memory bounded
+
+No temp files are ever written to disk — ZIP bytes are read directly
+into memory and discarded after parsing.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,7 +43,7 @@ from backend.db.upsert import (
     upsert_pod_metadata,
     upsert_totalizer_records,
 )
-from backend.ingestion.file_walker import walk_account, walk_root
+from backend.ingestion.file_walker import FileEntry, count_account_files, walk_account, walk_root
 from backend.parser.router import route_file
 
 logger = logging.getLogger(__name__)
@@ -70,6 +76,10 @@ ACCOUNT_SCHEMA_MAP: dict[str, str] = {
     "TOP ENERGY": "top_energy",
 }
 
+# Concurrency controls
+_CONCURRENCY = 5    # files processed simultaneously (bounded by DB pool_size=10)
+_CHUNK_SIZE = 100   # max FileEntry objects held in memory at once
+
 
 def schema_for(account_id: str) -> str:
     upper = account_id.upper()
@@ -79,29 +89,44 @@ def schema_for(account_id: str) -> str:
     return account_id.lower().replace(" ", "_").replace(".", "_").replace("à", "a")
 
 
-async def already_processed(session, file_name: str) -> bool:
-    """Return True if the file was previously processed with status=ok."""
-    from sqlalchemy import select, text
+async def _load_processed_names(session) -> set[str]:
+    """Load all file_names with status='ok' in a single query."""
+    from sqlalchemy import text
     result = await session.execute(
-        text("SELECT status FROM files WHERE file_name = :fn"),
-        {"fn": file_name},
+        text("SELECT file_name FROM files WHERE status = 'ok'")
     )
-    row = result.fetchone()
-    return row is not None and row[0] == "ok"
+    return {row[0] for row in result}
 
 
-async def process_file(account_id: str, file_path: Path, schema: str) -> None:
+def _read_xml_from_zip(zip_path: Path, xml_name: str) -> bytes:
+    """
+    Read the XML entry from a ZIP archive entirely in memory.
+    Returns raw XML bytes — no file is written to disk.
+    """
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        xml_entries = [e for e in zf.namelist() if e.lower().endswith(".xml")]
+        if not xml_entries:
+            raise ValueError(f"No XML file found inside {zip_path.name!r}")
+        # Use xml_name as hint; fall back to first entry
+        target = xml_name if xml_name in zf.namelist() else xml_entries[0]
+        return zf.read(target)
+
+
+async def process_file(account_id: str, entry: FileEntry, schema: str) -> None:
     """Parse and ingest one XML file, logging result in files table."""
-    file_name = file_path.name
+    xml_name = entry.xml_name
+    zip_path = entry.zip_path
 
     async with get_session(schema) as session:
-        # Skip already-processed files
-        if await already_processed(session, file_name):
-            logger.debug("Skip (already processed): %s", file_name)
-            return
-
         try:
-            result = route_file(file_path)
+            # Read ZIP in-memory — no extraction to disk
+            if zip_path.name.lower().endswith(".zip"):
+                xml_bytes = _read_xml_from_zip(zip_path, xml_name)
+                result = route_file(xml_bytes=xml_bytes, file_name=xml_name)
+            else:
+                # Bare .xml file (rare, legacy)
+                result = route_file(zip_path)
+
             meta = result.filename_meta
 
             if result.shape == "f2g":
@@ -110,10 +135,10 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                     result.f2g_records,
                     account_id=account_id,
                 )
-                logger.info("%s | pod_metadata: +%d", file_name, count)
+                logger.info("%s | pod_metadata: +%d", xml_name, count)
                 await log_file(
                     session,
-                    file_name=file_name,
+                    file_name=xml_name,
                     account_id=account_id,
                     cod_flusso=meta.cod_flusso,
                     piva_distributore=meta.piva_distributore,
@@ -137,11 +162,11 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                     mese_anno=meta.mese_anno,
                     file_timestamp=meta.file_timestamp,
                     progressivo=meta.progressivo,
-                    source_file=file_name,
+                    source_file=xml_name,
                     tipo_dato=tipo_dato,
                 )
                 logger.info(
-                    "%s | curves: +%d skipped:%d", file_name, inserted, skipped
+                    "%s | curves: +%d skipped:%d", xml_name, inserted, skipped
                 )
 
             # Upsert totalizer records
@@ -153,9 +178,9 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                     cod_flusso=meta.cod_flusso,
                     file_timestamp=meta.file_timestamp,
                     progressivo=meta.progressivo,
-                    source_file=file_name,
+                    source_file=xml_name,
                 )
-                logger.info("%s | totals: +%d", file_name, count)
+                logger.info("%s | totals: +%d", xml_name, count)
 
             # Handle Flusso 2 annullamento (delete)
             if result.annullamento_pods:
@@ -167,7 +192,7 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                 )
                 logger.info(
                     "%s | annullamento: deleted %d records for PODs %s",
-                    file_name, deleted, result.annullamento_pods,
+                    xml_name, deleted, result.annullamento_pods,
                 )
 
             # Log Flusso 2 corrections to audit table
@@ -182,12 +207,12 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                         motivazione=None,
                         data_rilevazione=None,
                         cod_flusso=meta.cod_flusso,
-                        source_file=file_name,
+                        source_file=xml_name,
                     )
 
             await log_file(
                 session,
-                file_name=file_name,
+                file_name=xml_name,
                 account_id=account_id,
                 cod_flusso=meta.cod_flusso,
                 piva_distributore=meta.piva_distributore,
@@ -200,12 +225,11 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
             )
 
         except Exception as exc:
-            logger.error("ERROR %s: %s", file_name, exc)
+            logger.error("ERROR %s: %s", xml_name, exc)
             try:
-                # Attempt to parse filename for the log even on error
                 from backend.parser.filename_parser import parse_filename
                 try:
-                    m = parse_filename(file_name)
+                    m = parse_filename(xml_name)
                     fmeta = dict(
                         cod_flusso=m.cod_flusso,
                         piva_distributore=m.piva_distributore,
@@ -224,14 +248,17 @@ async def process_file(account_id: str, file_path: Path, schema: str) -> None:
                 async with get_session(schema) as err_session:
                     await log_file(
                         err_session,
-                        file_name=file_name,
+                        file_name=xml_name,
                         account_id=account_id,
                         status="error",
                         error_message=str(exc),
                         **fmeta,
                     )
             except Exception as log_exc:
-                logger.error("Failed to log error for %s: %s", file_name, log_exc)
+                logger.error("Failed to log error for %s: %s", xml_name, log_exc)
+
+
+_ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
 
 
 async def ingest_account(
@@ -241,48 +268,84 @@ async def ingest_account(
     on_files_found: Callable[[int], None] | None = None,
     on_file_done: Callable[[], None] | None = None,
 ) -> tuple[int, int, int]:
-    """Returns (files_ok, files_error, files_skipped)."""
+    """
+    Ingest all new XML files for one account.
+
+    Returns (files_ok, files_error, files_skipped).
+
+    Strategy:
+      1. Fast count (directory listing, no ZIP open) → report total to UI
+      2. Pre-load processed filenames set (one DB query)
+      3. Generator walk — yields entries lazily
+      4. Process in chunks of _CHUNK_SIZE with _CONCURRENCY semaphore
+    """
     schema = schema_for(account_id)
     account_root = (data_root or DATA_ROOT) / account_id
 
+    if not account_root.exists():
+        logger.warning("Account root not found: %s — skipping", account_root)
+        return 0, 0, 0
+
+    # 1. Fast count (no ZIP opening)
     if on_scan_start:
         on_scan_start()
-    entries = walk_account(account_root, account_id)
-
-    logger.info(
-        "Ingesting %s (%s) — %d files found", account_id, schema, len(entries)
-    )
+    total = count_account_files(account_root)
+    logger.info("Ingesting %s (%s) — %d files on disk", account_id, schema, total)
     if on_files_found:
-        on_files_found(len(entries))
+        on_files_found(total)
 
+    # 2. Pre-load already-processed filenames in ONE query
+    async with get_session(schema) as s:
+        processed = await _load_processed_names(s)
+    logger.info("%s: %d already processed (will skip)", account_id, len(processed))
+
+    # 3. Walk as generator + semaphore concurrency
+    sem = asyncio.Semaphore(_CONCURRENCY)
     ok = error = skipped = 0
-    for i, entry in enumerate(entries, 1):
+
+    async def _run_one(entry: FileEntry) -> str:
+        """Returns 'ok' | 'error' | 'skip'."""
+        if entry.xml_name in processed:
+            return "skip"
+        async with sem:
+            try:
+                await process_file(account_id, entry, schema)
+                return "ok"
+            except Exception as exc:
+                logger.error("Unhandled error on %s: %s", entry.xml_name, exc)
+                return "error"
+
+    chunk: list[FileEntry] = []
+
+    async def _flush_chunk() -> None:
+        nonlocal ok, error, skipped
+        if not chunk:
+            return
+        results = await asyncio.gather(*[_run_one(e) for e in chunk])
+        for r in results:
+            if r == "ok":
+                ok += 1
+            elif r == "error":
+                error += 1
+            else:
+                skipped += 1
+            if on_file_done:
+                on_file_done()
+        chunk.clear()
+
+    i = 0
+    for entry in walk_account(account_root, account_id):
+        chunk.append(entry)
+        i += 1
         if i % 500 == 0:
-            logger.info("  Progress: %d / %d", i, len(entries))
-        try:
-            await process_file(account_id, entry.file_path, schema)
-            ok += 1
-        except Exception as exc:
-            logger.error("Unhandled error on %s: %s", entry.file_name, exc)
-            error += 1
-        finally:
-            # Free disk immediately: delete extracted XML after processing.
-            # The .xml.zip source file is always kept; this only removes the
-            # temp copy in _extracted/. Safe to delete even on error — the
-            # files table records the outcome, so a re-run will re-extract.
-            if "_extracted" in entry.file_path.parts and entry.file_path.exists():
-                try:
-                    entry.file_path.unlink()
-                except OSError:
-                    pass
-        if on_file_done:
-            on_file_done()
+            logger.info("  Progress: %d queued / %d total", i, total)
+        if len(chunk) >= _CHUNK_SIZE:
+            await _flush_chunk()
 
-    logger.info("Done %s — ok:%d errors:%d", account_id, ok, error)
+    await _flush_chunk()  # remainder
+
+    logger.info("Done %s — ok:%d errors:%d skipped:%d", account_id, ok, error, skipped)
     return ok, error, skipped
-
-
-_ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
 
 
 async def ingest_all(
@@ -347,6 +410,11 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    # Suppress SQLAlchemy internal SQL statement logging — engine.echo=False alone
+    # does not silence the sqlalchemy.engine logger when basicConfig sets root to INFO
+    logging.getLogger("sqlalchemy").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
     data_root = Path(args.data_path) if args.data_path else None
 
