@@ -265,6 +265,16 @@ async def ingest_account(
         except Exception as exc:
             logger.error("Unhandled error on %s: %s", entry.file_name, exc)
             error += 1
+        finally:
+            # Free disk immediately: delete extracted XML after processing.
+            # The .xml.zip source file is always kept; this only removes the
+            # temp copy in _extracted/. Safe to delete even on error — the
+            # files table records the outcome, so a re-run will re-extract.
+            if "_extracted" in entry.file_path.parts and entry.file_path.exists():
+                try:
+                    entry.file_path.unlink()
+                except OSError:
+                    pass
         if on_file_done:
             on_file_done()
 
