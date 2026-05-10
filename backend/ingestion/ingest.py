@@ -62,6 +62,7 @@ ACCOUNT_SCHEMA_MAP: dict[str, str] = {
     "ONDA PIU": "onda_piu",
     "POWER": "power_it",
     "POWER.IT": "power_it",
+    "POWERIT": "power_it",
     "ROYAL": "royal_group",
     "ROYAL GROUP": "royal_group",
     "SOS": "sos",
