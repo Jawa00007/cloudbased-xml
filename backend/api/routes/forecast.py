@@ -607,6 +607,26 @@ async def export_forecast_pods(
 
 
 @router.get(
+    "/measurements/months",
+    summary="List months that have measurement data for an account",
+)
+async def get_measurement_months(account_id: str, _: Auth) -> list[str]:
+    """Returns distinct mese_anno values from the measurements table, newest first."""
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        result = await session.execute(
+            text("""
+                SELECT DISTINCT mese_anno
+                FROM measurements
+                WHERE account_id = :acct AND tipo_dato IN ('E', 'S')
+                ORDER BY mese_anno DESC
+            """),
+            {"acct": account_id},
+        )
+        return [r[0] for r in result.fetchall()]
+
+
+@router.get(
     "/export/measurements",
     summary="Download actual measurements (source data) in per-POD wide format",
 )

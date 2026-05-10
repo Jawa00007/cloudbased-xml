@@ -198,6 +198,9 @@ export function downloadForecastPodsExcel(account_id: string, mese_anno: string)
   return _triggerDownload(`${BASE}/forecast/export/pods?${params}`, `forecast_pods_${account_id.toLowerCase()}_${safe}.xlsx`)
 }
 
+export const fetchMeasurementMonths = (account_id: string) =>
+  get<string[]>('/forecast/measurements/months', { account_id })
+
 export function downloadMeasurementsWideExcel(account_id: string, mese_anno: string): Promise<void> {
   const params = new URLSearchParams({ account_id, mese_anno })
   const safe = mese_anno.replace('/', '-')
