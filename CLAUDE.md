@@ -5,7 +5,7 @@
 Cloud-based data ingestion and analytics system for Italian SII (Sistema Informativo
 Integrato) electricity measurement XML files. The system:
 
-- Pulls XML/ZIP files from Nextcloud via WebDAV (Italian IP required — use VPN on DigitalOcean droplet)
+- Receives XML/ZIP files from a dedicated Italian server that is directly connected to the DigitalOcean droplet — no VPN or WebDAV required
 - Parses multiple SII-standard XML flow types dynamically (data-driven, never hardcoded)
 - Stores structured data in PostgreSQL (one schema per account/client)
 - Serves data via FastAPI REST API
@@ -21,9 +21,9 @@ Each account has its own PostgreSQL schema. Password rotation every 3 months.
 - **Backend**: Python 3.14, FastAPI, SQLAlchemy (async) ≥2.0.37, Alembic, Pydantic v2
 - **Frontend**: React 18, TypeScript, Vite, Recharts, TanStack Query, Tailwind CSS
 - **Database**: PostgreSQL 16 (local Docker on DigitalOcean droplet), one schema per account
-- **Infrastructure**: DigitalOcean Droplet (4 vCPU / 8 GB RAM / 160 GB SSD) + WireGuard or OpenVPN for Italian IP
-- **Scheduler**: APScheduler or cron — nightly at 02:00, plus manual trigger via API
-- **Ingestion**: Nextcloud WebDAV pull directly from server (no NAS dependency)
+- **Infrastructure**: DigitalOcean Droplet (4 vCPU / 8 GB RAM / 160 GB SSD); Italian server pushes/syncs XML files directly to the droplet — no VPN needed
+- **Scheduler**: APScheduler — nightly at 02:00 UTC, plus manual trigger via API
+- **Ingestion**: Reads XML/ZIP files from a local directory on the droplet populated by the Italian server
 
 ---
 
@@ -31,7 +31,7 @@ Each account has its own PostgreSQL schema. Password rotation every 3 months.
 
 ```
 backend/
-  ingestion/        # file_walker.py (local), future: Nextcloud WebDAV client
+  ingestion/        # file_walker.py — walks local XML/ZIP files synced from Italian server
   parser/           # filename_parser, shape_detector, curve_parser, totalizer_parser, router
   models/           # SQLAlchemy ORM: measurements, files, corrections, pod_metadata
   db/               # session.py (async, schema-scoped), upsert.py
@@ -425,25 +425,27 @@ ORDER BY m.data_misura;
 
 ## Ingestion Pipeline
 
+XML/ZIP files are delivered to the DigitalOcean droplet by the Italian server (direct
+connection — no VPN, no WebDAV). The ingestion script reads from a local `data/` directory.
+
 ```
-1. Read ElencoFileGiornalieri<HH>.txt daily index (if available)
-2. Connect to Nextcloud via WebDAV (username/password per account)
-3. List new files not already in `files` table
-4. Download file (or extract from ZIP)
-5. Parse filename → extract CodFlusso, Timestamp, Progressivo, AAAAMM, SM
-6. Route to correct parser based on CodFlusso
-7. Detect data shape: Ea present? → curve; no Ea? → totalizer
-8. Convert Italian decimals (comma → period)
-9. Validate: Dst=0 days must have exactly 96 Ea attributes
-10. Check for duplicate: compare file_timestamp + progressivo
-11. Upsert into correct table (measurements / totalizer / pod_metadata)
-12. Log result in `files` table
-13. Log corrections in `corrections` table for Flusso 2 files
+1. Walk local data/<account>/ directory for new XML/ZIP files
+2. Skip files already recorded in the `files` table (by file_name)
+3. Extract ZIP if needed
+4. Parse filename → extract CodFlusso, Timestamp, Progressivo, AAAAMM, SM
+5. Route to correct parser based on CodFlusso
+6. Detect data shape: Ea present? → curve; no Ea? → totalizer
+7. Convert Italian decimals (comma → period)
+8. Validate: Dst=0 days must have exactly 96 Ea attributes
+9. Check for duplicate: compare file_timestamp + progressivo
+10. Upsert into correct table (measurements / totalizer / pod_metadata)
+11. Log result in `files` table
+12. Log corrections in `corrections` table for Flusso 2 files
 ```
 
 **Scheduling:**
-- Nightly: `0 2 * * * python -m ingestion.ingest --all`
-- Manual: `POST /sync` or `POST /sync/{account}`
+- Nightly: APScheduler fires at 02:00 UTC — `ingest --all`
+- Manual: `POST /sync` or `POST /sync/{account}` via API / Sync page in UI
 
 ---
 
@@ -455,7 +457,7 @@ ORDER BY m.data_misura;
 - Async SQLAlchemy sessions — never use synchronous DB calls
 - All DB access through ORM models, never raw SQL strings with f-strings
 - All secrets in `.env` via `pydantic-settings` — never hardcoded anywhere
-- Never log Nextcloud passwords, even at DEBUG level
+- Never log credentials or secrets, even at DEBUG level
 - Every rejected/incomplete file must be logged in `files` table — never silently discard
 - Parser must never hardcode flow type names — detect from XML attributes and tag presence
 
@@ -487,19 +489,17 @@ ORDER BY m.data_misura;
 DATABASE_URL=postgresql+psycopg://sii:sii_db_2024@db:5432/sii
 # Local dev (SSH tunnel or port-forward): postgresql+psycopg://sii:sii_db_2024@localhost:5433/sii
 
-# Nextcloud (one set per account — prefix with account name, added in Milestone 2)
-BAT_NEXTCLOUD_URL=https://...
-BAT_NEXTCLOUD_USER=...
-BAT_NEXTCLOUD_PASS=...
-
-# VPN (WireGuard — required for Italian IP to reach Nextcloud)
-VPN_INTERFACE=wg0
-VPN_ENABLED=true
+# Data directory — where the Italian server deposits XML/ZIP files
+# Each account has a subfolder: DATA_DIR/BAT/, DATA_DIR/CH4/, etc.
+DATA_DIR=/opt/sii/data
 
 # App
 SECRET_KEY=...
 ENVIRONMENT=production
 LOG_LEVEL=INFO
+
+# Monitoring (optional — only needed when docker-compose.monitoring.yml is deployed)
+GRAFANA_PASSWORD=change_me_in_production
 ```
 
 ---
@@ -522,7 +522,6 @@ CREATE TABLE public.accounts (
   account_id    TEXT PRIMARY KEY,
   schema_name   TEXT NOT NULL,
   display_name  TEXT,
-  nextcloud_url TEXT,
   active        BOOLEAN DEFAULT true,
   created_at    TIMESTAMP DEFAULT now()
 );
@@ -532,7 +531,7 @@ CREATE TABLE public.accounts (
 
 ## Milestones
 
-**Milestone 1** — Ingestion + parsing + DB setup
+**Milestone 1** — Ingestion + parsing + DB setup ✅
 - [x] XML parser (both shapes: curve and totalizer) — `backend/parser/`
 - [x] Italian decimal converter — `parse_italian_float()` in curve/totalizer parsers
 - [x] DST handling — Dst attribute read and stored per measurement
@@ -543,26 +542,31 @@ CREATE TABLE public.accounts (
       `corrections`, `pod_metadata`, `files`
 - [x] PostgreSQL connection — local Docker on DigitalOcean, psycopg driver
 - [x] Client confirmation report — `report.py` → `reports/<account>.html`
-- [ ] Nextcloud WebDAV client (Milestone 2 — server needs Italian IP via VPN)
-- [ ] ElencoFileGiornalieri index reader
-- [ ] F2G parser (`pod_metadata` table)
-- [ ] Full BAT ingestion run (all ~20k files)
-- [ ] Alembic migrations (currently using `Base.metadata.create_all()` on dev machine)
-- [ ] pytest test suite
+- [x] F2G parser (`pod_metadata` table)
+- [x] Alembic migrations configured
+- [x] pytest test suite (parser, auth, security, performance, health, ingestion lock, smoke)
 
-**Milestone 2** — APIs + scheduler + Nextcloud
-- [ ] FastAPI endpoints (all routes in API Endpoints section)
-- [ ] Aggregation engine (daily + monthly rollup)
-- [ ] Nightly scheduler (APScheduler or cron)
-- [ ] Nextcloud WebDAV client + ElencoFileGiornalieri reader
+**Milestone 2** — APIs + scheduler + data pipeline ✅
+- [x] FastAPI endpoints (all routes in API Endpoints section)
+- [x] Aggregation engine (daily + monthly rollup)
+- [x] Nightly scheduler (APScheduler at 02:00 UTC)
+- [x] Ingestion concurrency guard (409 on double-trigger) — `backend/ingestion/lock.py`
+- [x] Italian server direct connection — XML files delivered to local `data/` directory
+      (no Nextcloud, no VPN — replaced by direct server-to-server link)
+- [ ] Full historical backfill for all 12 accounts (BAT currently has data to 03/2025)
 
-**Milestone 3** — Dashboard + deployment
-- [ ] React dashboard (POD filter, date filter, chart, export CSV/Excel)
-- [ ] Manual sync trigger in UI
-- [ ] Docker setup
-- [ ] DigitalOcean Droplet deployment
-- [ ] Nginx reverse proxy
-- [ ] WireGuard VPN setup for Italian IP access to Nextcloud
+**Milestone 3** — Dashboard + deployment ✅
+- [x] React dashboard (POD filter, date filter, chart, export CSV/Excel)
+- [x] Forecast engine — generate monthly forecasts with loss rules + dispatching weights
+- [x] Excel exports — by dispatching point, per-POD (96 periods), source measurements
+- [x] Manual sync trigger in UI (Sync page)
+- [x] Docker setup + DigitalOcean Droplet deployment
+- [x] Nginx reverse proxy (HTTPS, rate limiting, security headers)
+- [x] Prometheus + Grafana monitoring stack (`docker-compose.monitoring.yml`)
+
+**Pending**
+- [ ] Historical data backfill — pipe remaining accounts' XML archives through ingestion
+- [ ] Confirm Italian server sync mechanism (push schedule, directory layout, file format)
 
 ---
 
