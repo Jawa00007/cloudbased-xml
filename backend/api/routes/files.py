@@ -19,7 +19,8 @@ router = APIRouter(tags=["files"])
 async def list_files(
     account: Annotated[str, Query()],
     status: Annotated[str | None, Query(description="ok | error | skipped")] = None,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
     _: Annotated[str, Depends(require_auth)] = None,
 ) -> list[FileLogOut]:
     schema = schema_for(account)
@@ -32,8 +33,8 @@ async def list_files(
                 FROM files
                 WHERE status = :status
                 ORDER BY processed_at DESC
-                LIMIT :limit
-            """), {"status": status, "limit": limit})
+                LIMIT :limit OFFSET :offset
+            """), {"status": status, "limit": limit, "offset": offset})
         else:
             result = await session.execute(text("""
                 SELECT file_id, file_name, account_id, cod_flusso, mese_anno,
@@ -41,8 +42,8 @@ async def list_files(
                        status, error_message
                 FROM files
                 ORDER BY processed_at DESC
-                LIMIT :limit
-            """), {"limit": limit})
+                LIMIT :limit OFFSET :offset
+            """), {"limit": limit, "offset": offset})
 
         rows = result.fetchall()
 

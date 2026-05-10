@@ -689,6 +689,8 @@ async def get_forecast(
     mese_anno: str,
     _: Auth,
     pod: str | None = Query(default=None, description="Filter to a specific POD"),
+    limit: int = Query(default=2976, ge=1, le=10000, description="Max rows (default 2976 = 1 POD × 31 days × 96)"),
+    offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
 ) -> list[ForecastPeriodOut]:
     schema = schema_for(account_id)
     async with get_session(schema) as session:
@@ -699,7 +701,8 @@ async def get_forecast(
                 FROM forecast_periods
                 WHERE account_id = :acct AND mese_anno = :ma AND pod = :pod
                 ORDER BY forecast_date, periodo
-            """), {"acct": account_id, "ma": mese_anno, "pod": pod})
+                LIMIT :lim OFFSET :off
+            """), {"acct": account_id, "ma": mese_anno, "pod": pod, "lim": limit, "off": offset})
         else:
             rows = await session.execute(text("""
                 SELECT pod, mese_anno, punto_dispacciamento, forecast_date, source_date,
@@ -707,7 +710,8 @@ async def get_forecast(
                 FROM forecast_periods
                 WHERE account_id = :acct AND mese_anno = :ma
                 ORDER BY pod, forecast_date, periodo
-            """), {"acct": account_id, "ma": mese_anno})
+                LIMIT :lim OFFSET :off
+            """), {"acct": account_id, "ma": mese_anno, "lim": limit, "off": offset})
 
         result = rows.fetchall()
 
