@@ -147,8 +147,9 @@ def extract_curve_records(
     elif causa_text in ("NO", "N"):
         causa_ostativa = False
 
-    # Normalise TipoDato=A + Validato=S → treat as E
-    effective_tipo_dato = tipo_dato
+    # Normalise TipoDato: absent in Flusso 2 corrections → default to E
+    # (corrections target existing E records; None would violate NOT NULL)
+    effective_tipo_dato = tipo_dato or "E"
     if tipo_dato == "A" and validato and validato.upper() == "S":
         effective_tipo_dato = "E"
 
