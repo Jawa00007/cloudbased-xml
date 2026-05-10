@@ -95,30 +95,40 @@ _ACCOUNT_TIMEOUT = 3600  # seconds — matches ingest_all's internal timeout
 
 # DB-backed last-sync cache (30s TTL) so cron-triggered runs show up in the UI
 _db_last_sync: dict[str, datetime | None] = {}
+_db_file_counts: dict[str, tuple[int, int]] = {}   # account → (ok, error)
 _db_last_sync_ts: float = 0.0
 _DB_CACHE_TTL = 30.0
 
 
 async def _refresh_db_last_syncs() -> None:
-    """Query MAX(processed_at) per account schema from the files table."""
-    global _db_last_sync, _db_last_sync_ts
+    """Query MAX(processed_at) and file counts per account schema from the files table."""
+    global _db_last_sync, _db_file_counts, _db_last_sync_ts
+    from sqlalchemy import text
+
     now = time.monotonic()
     if now - _db_last_sync_ts < _DB_CACHE_TTL:
         return
-    result: dict[str, datetime | None] = {}
+    syncs: dict[str, datetime | None] = {}
+    counts: dict[str, tuple[int, int]] = {}
     for acc in ACCOUNT_SCHEMA_MAP:
         schema = schema_for(acc)
         try:
             async with get_session(schema) as session:
-                from sqlalchemy import text
-                row = await session.execute(
-                    text("SELECT MAX(processed_at) FROM files WHERE status = 'ok'")
-                )
-                val = row.scalar()
-                result[acc] = val
+                row = await session.execute(text("""
+                    SELECT
+                        MAX(processed_at),
+                        COUNT(*) FILTER (WHERE status = 'ok'),
+                        COUNT(*) FILTER (WHERE status = 'error')
+                    FROM files
+                """))
+                last_at, ok, err = row.one()
+                syncs[acc] = last_at
+                counts[acc] = (int(ok or 0), int(err or 0))
         except Exception:
-            result[acc] = None
-    _db_last_sync = result
+            syncs[acc] = None
+            counts[acc] = (0, 0)
+    _db_last_sync = syncs
+    _db_file_counts = counts
     _db_last_sync_ts = time.monotonic()
 
 
@@ -319,13 +329,20 @@ async def sync_status(
         else:
             best_finished = db_finished or mem_finished
 
+        # Fall back to DB-derived counts when in-memory state is absent (backfill container)
+        db_ok, db_err = _db_file_counts.get(acc, (0, 0))
+        files_ok = prev.files_ok if prev.files_ok or not db_ok else db_ok
+        files_error = prev.files_error if prev.files_error or not db_err else db_err
+        # An account is "backfilling" when it has DB activity but no in-memory sync record
+        backfilling = bool(db_ok or db_err) and acc not in _sync_state
+
         if running:
             result.append(SyncStatusOut(
                 account_id=acc,
                 started_at=guard.started_at,
                 finished_at=best_finished,
-                files_ok=prev.files_ok,
-                files_error=prev.files_error,
+                files_ok=files_ok,
+                files_error=files_error,
                 files_skipped=prev.files_skipped,
                 running=True,
                 current_account=guard.current_account,
@@ -342,6 +359,11 @@ async def sync_status(
             data = prev.model_dump()
             data["finished_at"] = best_finished
             data["next_run"] = next_run
+            data["files_ok"] = files_ok
+            data["files_error"] = files_error
+            # Show "backfill" as triggered_by for accounts populated by the container
+            if backfilling and not data.get("triggered_by"):
+                data["triggered_by"] = "backfill"
             result.append(SyncStatusOut(**data))
 
     return result
