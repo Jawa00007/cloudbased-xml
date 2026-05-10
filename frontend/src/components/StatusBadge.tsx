@@ -4,6 +4,7 @@ const MAP: Record<string, { cls: string; dot?: boolean }> = {
   skipped:   { cls: 'bg-slate-100 text-slate-500 ring-slate-200' },
   duplicate: { cls: 'bg-amber-50 text-amber-700 ring-amber-200' },
   running:   { cls: 'bg-blue-50 text-blue-700 ring-blue-200',  dot: true },
+  queued:    { cls: 'bg-amber-50 text-amber-700 ring-amber-200', dot: true },
   E:         { cls: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
   S:         { cls: 'bg-amber-50 text-amber-700 ring-amber-200' },
   mixed:     { cls: 'bg-orange-50 text-orange-700 ring-orange-200' },
@@ -13,6 +14,7 @@ const DOT: Record<string, string> = {
   ok:      'bg-emerald-500',
   error:   'bg-red-500',
   running: 'bg-blue-500 animate-pulse',
+  queued:  'bg-amber-400',
 }
 
 export default function StatusBadge({ value }: { value: string | null | undefined }) {

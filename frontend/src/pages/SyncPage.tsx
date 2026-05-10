@@ -50,6 +50,9 @@ export default function SyncPage() {
 
   const statuses = syncStatus.data ?? []
   const isRunning = statuses.some(s => s.running)
+  const isBackfilling = statuses.some(s => s.running && s.triggered_by === 'backfill')
+  const backfillCurrent = statuses.find(s => s.running && s.triggered_by === 'backfill')?.current_account ?? null
+  const backfillQueuedCount = statuses.filter(s => s.backfill_queued).length
   const first = statuses[0]
 
   // Progress from any running row
@@ -283,7 +286,27 @@ export default function SyncPage() {
         </div>
 
         {/* Status table */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-3">
+
+          {/* Backfill banner */}
+          {isBackfilling && (
+            <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3">
+              <svg className="w-4 h-4 text-amber-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              <div className="flex-1 min-w-0">
+                <span className="text-xs font-semibold text-amber-800">Background backfill running</span>
+                <span className="text-xs text-amber-600 ml-2">
+                  {backfillCurrent
+                    ? <>Processing <span className="font-semibold">{backfillCurrent}</span>{backfillQueuedCount > 0 ? ` · ${backfillQueuedCount} account${backfillQueuedCount > 1 ? 's' : ''} queued` : ''}</>
+                    : 'Loading historical data into the database'}
+                </span>
+              </div>
+              <span className="text-[10px] text-amber-500 font-medium bg-amber-100 px-2 py-0.5 rounded-full flex-shrink-0">sii-backfill</span>
+            </div>
+          )}
+
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <p className="text-sm font-semibold text-slate-900">Sync history — per account</p>
@@ -328,18 +351,34 @@ export default function SyncPage() {
                     <div
                       key={s.account_id}
                       className={`grid grid-cols-7 px-6 py-3 text-xs items-center transition-colors ${
-                        s.running && s.current_account === s.account_id
+                        s.running && s.current_account === s.account_id && s.triggered_by === 'backfill'
+                          ? 'bg-amber-50/60'
+                          : s.running && s.current_account === s.account_id
                           ? 'bg-blue-50/60'
+                          : s.backfill_queued
+                          ? 'bg-amber-50/30'
                           : 'hover:bg-slate-50/70'
                       }`}
                     >
                       <span className="font-semibold text-slate-800 flex items-center gap-1.5">
-                        {s.running && s.current_account === s.account_id && (
+                        {s.running && s.current_account === s.account_id && s.triggered_by === 'backfill' && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse flex-shrink-0" />
+                        )}
+                        {s.running && s.current_account === s.account_id && s.triggered_by !== 'backfill' && (
                           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse flex-shrink-0" />
+                        )}
+                        {s.backfill_queued && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-300 flex-shrink-0" />
                         )}
                         {s.account_id}
                       </span>
-                      <StatusBadge value={s.running ? 'running' : (s.finished_at ? 'ok' : 'idle')} />
+                      <StatusBadge value={
+                        s.running && s.triggered_by === 'backfill' ? 'running'
+                        : s.running ? 'running'
+                        : s.backfill_queued ? 'queued'
+                        : s.finished_at ? 'ok'
+                        : 'idle'
+                      } />
                       <span className="text-emerald-600 font-semibold tabular-nums">
                         {s.files_ok > 0 ? s.files_ok.toLocaleString() : '—'}
                       </span>
@@ -350,7 +389,9 @@ export default function SyncPage() {
                         {fmtRelative(s.finished_at)}
                       </span>
                       <span className="tabular-nums">
-                        {s.running
+                        {s.triggered_by === 'backfill'
+                          ? <span className="text-amber-600 text-[10px] font-medium bg-amber-50 px-1.5 py-0.5 rounded-md">backfill</span>
+                          : s.running
                           ? (s.triggered_by === 'scheduler'
                             ? <span className="text-purple-600 text-[10px] font-medium bg-purple-50 px-1.5 py-0.5 rounded-md">nightly</span>
                             : <span className="text-blue-600 text-[10px] font-medium bg-blue-50 px-1.5 py-0.5 rounded-md">manual</span>)
@@ -361,8 +402,12 @@ export default function SyncPage() {
                           : <span className="text-slate-300">—</span>}
                       </span>
                       <span className="text-slate-400 tabular-nums">
-                        {s.running && s.current_account === s.account_id
+                        {s.running && s.current_account === s.account_id && s.triggered_by === 'backfill'
+                          ? <span className="text-amber-500 font-medium animate-pulse">processing…</span>
+                          : s.running && s.current_account === s.account_id
                           ? <span className="text-blue-500 font-medium animate-pulse">active…</span>
+                          : s.backfill_queued
+                          ? <span className="text-amber-400 font-medium">queued</span>
                           : s.running
                           ? <span className="text-slate-300">waiting</span>
                           : s.finished_at
@@ -375,7 +420,8 @@ export default function SyncPage() {
               </>
             )}
           </div>
-        </div>
+        </div> {/* end status table card */}
+        </div> {/* end lg:col-span-2 space-y-3 */}
       </div>
     </div>
   )

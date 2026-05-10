@@ -64,6 +64,7 @@ export interface SyncStatus {
   phase: string | null
   files_done: number | null
   files_total: number | null
+  backfill_queued: boolean
 }
 
 export interface MissingPeriod {

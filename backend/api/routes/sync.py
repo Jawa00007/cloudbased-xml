@@ -29,6 +29,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
+# Status file written by run_backfill.sh — mounted at /app/data/.backfill_status.json
+_BACKFILL_STATUS_FILE = Path(settings.SII_DATA_PATH if hasattr(__import__('backend.core.config', fromlist=['settings']), 'settings') else '/app/data') / '.backfill_status.json'
+
+
+def _read_backfill_status() -> dict:
+    """Read backfill container status written by run_backfill.sh. Returns {} if not active."""
+    try:
+        from backend.core.config import settings as _s
+        p = Path(_s.SII_DATA_PATH) / '.backfill_status.json'
+        if p.exists():
+            data = json.loads(p.read_text())
+            if data.get('running'):
+                return data
+    except Exception:
+        pass
+    return {}
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from backend.api.auth import require_auth
@@ -317,6 +334,12 @@ async def sync_status(
     except Exception:
         pass
 
+    # Read external backfill container state
+    backfill = _read_backfill_status()
+    backfill_current = (backfill.get("current") or "").upper()
+    backfill_queue = [a.upper() for a in (backfill.get("queue") or [])]
+    backfill_active = bool(backfill_current)
+
     for acc in ACCOUNT_SCHEMA_MAP:
         prev = _sync_state.get(acc, _make_status(acc))
 
@@ -333,10 +356,12 @@ async def sync_status(
         db_ok, db_err = _db_file_counts.get(acc, (0, 0))
         files_ok = prev.files_ok if prev.files_ok or not db_ok else db_ok
         files_error = prev.files_error if prev.files_error or not db_err else db_err
-        # An account is "backfilling" when it has DB activity but no in-memory sync record
-        backfilling = bool(db_ok or db_err) and acc not in _sync_state
+
+        is_backfill_current = backfill_active and acc == backfill_current
+        is_backfill_queued = backfill_active and acc in backfill_queue
 
         if running:
+            # API-triggered or scheduler sync in progress
             result.append(SyncStatusOut(
                 account_id=acc,
                 started_at=guard.started_at,
@@ -354,6 +379,22 @@ async def sync_status(
                 phase=guard.phase or None,
                 files_done=guard.files_done if guard.files_total > 0 else None,
                 files_total=guard.files_total if guard.files_total > 0 else None,
+                backfill_queued=is_backfill_queued,
+            ))
+        elif is_backfill_current:
+            # Backfill container is actively processing this account
+            result.append(SyncStatusOut(
+                account_id=acc,
+                started_at=None,
+                finished_at=best_finished,
+                files_ok=files_ok,
+                files_error=files_error,
+                files_skipped=0,
+                running=True,
+                triggered_by="backfill",
+                current_account=acc,
+                next_run=next_run,
+                phase="backfill",
             ))
         else:
             data = prev.model_dump()
@@ -361,8 +402,8 @@ async def sync_status(
             data["next_run"] = next_run
             data["files_ok"] = files_ok
             data["files_error"] = files_error
-            # Show "backfill" as triggered_by for accounts populated by the container
-            if backfilling and not data.get("triggered_by"):
+            data["backfill_queued"] = is_backfill_queued
+            if (db_ok or db_err) and not data.get("triggered_by"):
                 data["triggered_by"] = "backfill"
             result.append(SyncStatusOut(**data))
 

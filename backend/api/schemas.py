@@ -144,6 +144,8 @@ class SyncStatusOut(BaseModel):
     phase: str | None = None             # "scanning" | "processing" | ""
     files_done: int | None = None
     files_total: int | None = None
+    # Backfill container state (external sii-backfill Docker container)
+    backfill_queued: bool = False        # account is waiting in backfill queue
 
 
 class SyncTriggerOut(BaseModel):
