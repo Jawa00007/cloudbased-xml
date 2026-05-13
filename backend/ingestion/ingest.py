@@ -256,6 +256,7 @@ async def process_file(account_id: str, entry: FileEntry, schema: str) -> None:
                     )
             except Exception as log_exc:
                 logger.error("Failed to log error for %s: %s", xml_name, log_exc)
+            raise  # re-raise so caller can distinguish ok vs error and skip ZIP deletion
 
 
 _ACCOUNT_TIMEOUT_SECONDS = 3600  # 1 hour per account max
@@ -306,14 +307,18 @@ async def ingest_account(
     async def _run_one(entry: FileEntry) -> str:
         """Returns 'ok' | 'error' | 'skip'."""
         if entry.xml_name in processed:
+            # Already committed ok in DB — source ZIP no longer needed
+            entry.zip_path.unlink(missing_ok=True)
             return "skip"
         async with sem:
             try:
                 await process_file(account_id, entry, schema)
+                # DB commit succeeded → flow: sync→parse→validate→mark→delete
+                entry.zip_path.unlink(missing_ok=True)
                 return "ok"
             except Exception as exc:
                 logger.error("Unhandled error on %s: %s", entry.xml_name, exc)
-                return "error"
+                return "error"  # keep ZIP — will retry on next run
 
     chunk: list[FileEntry] = []
 

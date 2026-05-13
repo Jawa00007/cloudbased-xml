@@ -146,6 +146,9 @@ class SyncStatusOut(BaseModel):
     files_total: int | None = None
     # Backfill container state (external sii-backfill Docker container)
     backfill_queued: bool = False        # account is waiting in backfill queue
+    backfill_queue: list[str] | None = None   # ordered remaining accounts (set on current account row only)
+    backfill_accounts_done: int | None = None
+    backfill_accounts_total: int | None = None
 
 
 class SyncTriggerOut(BaseModel):

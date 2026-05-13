@@ -426,26 +426,33 @@ ORDER BY m.data_misura;
 ## Ingestion Pipeline
 
 XML/ZIP files are delivered to the DigitalOcean droplet by the Italian server (direct
-connection — no VPN, no WebDAV). The ingestion script reads from a local `data/` directory.
+connection — no VPN, no WebDAV). Files are **transient** — once successfully ingested,
+the source ZIP is deleted to keep disk usage stable. Only the parsed DB records are
+kept permanently.
 
 ```
-1. Walk local data/<account>/ directory for new XML/ZIP files
-2. Skip files already recorded in the `files` table (by file_name)
-3. Extract ZIP if needed
-4. Parse filename → extract CodFlusso, Timestamp, Progressivo, AAAAMM, SM
-5. Route to correct parser based on CodFlusso
-6. Detect data shape: Ea present? → curve; no Ea? → totalizer
-7. Convert Italian decimals (comma → period)
-8. Validate: Dst=0 days must have exactly 96 Ea attributes
-9. Check for duplicate: compare file_timestamp + progressivo
-10. Upsert into correct table (measurements / totalizer / pod_metadata)
-11. Log result in `files` table
-12. Log corrections in `corrections` table for Flusso 2 files
+1. Sync — Italian server pushes XML/ZIP files to /opt/sii/data/<account>/
+2. Parse — read ZIP bytes in-memory (no extraction to disk); route to correct parser
+3. Validate — shape detection, DST handling, Italian decimal conversion
+4. Mark processed — upsert into measurements/totalizer/pod_metadata; log status='ok' in files table
+5. Delete ZIP — source file deleted after confirmed DB commit; errors keep ZIP for retry
+6. Log corrections in `corrections` table for Flusso 2 files
 ```
+
+**Key implementation details:**
+- ZIPs are read entirely in-memory via `zipfile.ZipFile.read()` + `ET.fromstring(bytes)`
+- `_load_processed_names()` pre-loads all `status='ok'` filenames in one query per account
+  (avoids 1 SELECT per file); already-processed files are deleted without re-parsing
+- 5 files processed concurrently (asyncio.Semaphore); chunks of 100 to bound memory
+- Errored files (status='error') are NOT deleted — retried on every subsequent run
+- upsert uses `ON CONFLICT index_elements` (not named constraint) to avoid schema-prefix issues
+- Batch rows deduplicated before INSERT to prevent CardinalityViolation
+- Batches chunked at 3400 rows (3400 × 19 cols < 65535 param limit)
 
 **Scheduling:**
 - Nightly: APScheduler fires at 02:00 UTC — `ingest --all`
 - Manual: `POST /sync` or `POST /sync/{account}` via API / Sync page in UI
+- Historical backfill: `run_backfill.sh` runs each account via `docker run --rm sii-backfill`
 
 ---
 

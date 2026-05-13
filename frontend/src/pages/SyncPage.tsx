@@ -49,23 +49,32 @@ export default function SyncPage() {
   })
 
   const statuses = syncStatus.data ?? []
-  const isRunning = statuses.some(s => s.running)
-  const isBackfilling = statuses.some(s => s.running && s.triggered_by === 'backfill')
-  const backfillCurrent = statuses.find(s => s.running && s.triggered_by === 'backfill')?.current_account ?? null
-  const backfillQueuedCount = statuses.filter(s => s.backfill_queued).length
   const first = statuses[0]
-
-  // Progress from any running row
-  const running = statuses.find(s => s.running)
-  const elapsedSecs = running?.elapsed_seconds ?? null
-  const accountsDone = running?.accounts_done ?? null
-  const accountsTotal = running?.accounts_total ?? null
-  const currentAccount = running?.current_account ?? null
-  const triggeredBy = running?.triggered_by ?? null
   const nextRun = first?.next_run ?? null
-  const phase = running?.phase ?? null
-  const filesDone = running?.files_done ?? null
-  const filesTotal = running?.files_total ?? null
+
+  // Separate API/scheduler sync from backfill container
+  const apiRunning = statuses.find(s => s.running && s.triggered_by !== 'backfill')
+  const backfillStatus = statuses.find(s => s.running && s.triggered_by === 'backfill')
+  const isRunning = !!apiRunning || !!backfillStatus
+  const isBackfilling = !!backfillStatus
+
+  // API/scheduler progress
+  const elapsedSecs = apiRunning?.elapsed_seconds ?? null
+  const accountsDone = apiRunning?.accounts_done ?? null
+  const accountsTotal = apiRunning?.accounts_total ?? null
+  const currentAccount = apiRunning?.current_account ?? null
+  const triggeredBy = apiRunning?.triggered_by ?? null
+  const phase = apiRunning?.phase ?? null
+  const filesDone = apiRunning?.files_done ?? null
+  const filesTotal = apiRunning?.files_total ?? null
+
+  // Backfill progress
+  const backfillCurrent = backfillStatus?.current_account ?? null
+  const backfillFilesDone = backfillStatus?.files_done ?? null
+  const backfillFilesTotal = backfillStatus?.files_total ?? null
+  const backfillAccDone = backfillStatus?.backfill_accounts_done ?? null
+  const backfillAccTotal = backfillStatus?.backfill_accounts_total ?? null
+  const backfillQueue = backfillStatus?.backfill_queue ?? statuses.filter(s => s.backfill_queued).map(s => s.account_id)
 
   // Last completed sync — most recent finished_at across all accounts
   const lastFinishedArr = statuses.map(s => s.finished_at).filter(Boolean).sort()
@@ -77,6 +86,14 @@ export default function SyncPage() {
 
   const fileProgressPct = filesDone !== null && filesTotal && filesTotal > 0
     ? Math.round((filesDone / filesTotal) * 100)
+    : null
+
+  const backfillFilePct = backfillFilesDone !== null && backfillFilesTotal && backfillFilesTotal > 0
+    ? Math.round((backfillFilesDone / backfillFilesTotal) * 100)
+    : null
+
+  const backfillAccPct = backfillAccDone !== null && backfillAccTotal && backfillAccTotal > 0
+    ? Math.round((backfillAccDone / backfillAccTotal) * 100)
     : null
 
   return (
@@ -209,8 +226,8 @@ export default function SyncPage() {
             </div>
           </div>
 
-          {/* Live progress card — only while running */}
-          {isRunning && (
+          {/* API/scheduler live progress card */}
+          {apiRunning && (
             <div className="bg-blue-50 border border-blue-100 rounded-2xl p-5 space-y-3">
               <div className="flex items-center gap-2">
                 <svg className="w-3.5 h-3.5 text-blue-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
@@ -221,14 +238,9 @@ export default function SyncPage() {
                   {triggeredBy === 'scheduler' ? 'Nightly sync running' : 'Manual sync running'}
                 </span>
               </div>
-
               {currentAccount && (
-                <div className="text-xs text-blue-700">
-                  Account: <span className="font-semibold">{currentAccount}</span>
-                </div>
+                <div className="text-xs text-blue-700">Account: <span className="font-semibold">{currentAccount}</span></div>
               )}
-
-              {/* Phase: scanning */}
               {phase === 'scanning' && (
                 <div className="space-y-1.5">
                   <div className="flex items-center gap-1.5 text-[10px] text-blue-600">
@@ -243,8 +255,6 @@ export default function SyncPage() {
                   </div>
                 </div>
               )}
-
-              {/* Phase: processing — show file-level progress */}
               {phase === 'processing' && filesDone !== null && filesTotal !== null && filesTotal > 0 && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-[10px] text-blue-600">
@@ -252,15 +262,10 @@ export default function SyncPage() {
                     <span>{fileProgressPct}%</span>
                   </div>
                   <div className="w-full h-1.5 bg-blue-200 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                      style={{ width: `${fileProgressPct}%` }}
-                    />
+                    <div className="h-full bg-blue-600 rounded-full transition-all duration-300" style={{ width: `${fileProgressPct}%` }} />
                   </div>
                 </div>
               )}
-
-              {/* Account-level progress (only useful for multi-account runs) */}
               {accountsTotal !== null && accountsTotal > 1 && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-[10px] text-blue-500">
@@ -268,17 +273,88 @@ export default function SyncPage() {
                     <span>{accountProgressPct}%</span>
                   </div>
                   <div className="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-blue-400 rounded-full transition-all duration-500" style={{ width: `${accountProgressPct ?? 0}%` }} />
+                  </div>
+                </div>
+              )}
+              {elapsedSecs !== null && (
+                <div className="text-[10px] text-blue-500">Elapsed: {fmtElapsed(elapsedSecs)}</div>
+              )}
+            </div>
+          )}
+
+          {/* Backfill progress card */}
+          {isBackfilling && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className="w-3.5 h-3.5 text-amber-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                  <span className="text-xs font-semibold text-amber-800">Historical backfill running</span>
+                </div>
+                <span className="text-[10px] text-amber-600 font-medium bg-amber-100 px-2 py-0.5 rounded-full">sii-backfill</span>
+              </div>
+
+              {/* Current account + account progress */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-amber-700">
+                    Processing: <span className="font-semibold">{backfillCurrent}</span>
+                  </span>
+                  {backfillAccDone !== null && backfillAccTotal && (
+                    <span className="text-[10px] text-amber-600 font-medium">
+                      Account {backfillAccDone + 1} of {backfillAccTotal}
+                    </span>
+                  )}
+                </div>
+                {backfillAccTotal && backfillAccTotal > 1 && (
+                  <div className="w-full h-1 bg-amber-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-blue-400 rounded-full transition-all duration-500"
-                      style={{ width: `${accountProgressPct ?? 0}%` }}
+                      className="h-full bg-amber-400 rounded-full transition-all duration-500"
+                      style={{ width: `${backfillAccPct ?? 0}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* File-level progress for current account */}
+              {backfillFilesTotal !== null && backfillFilesTotal > 0 && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[10px] text-amber-700">
+                    <span>
+                      {backfillFilesDone !== null
+                        ? <>{backfillFilesDone.toLocaleString()} ok / {backfillFilesTotal.toLocaleString()} files</>
+                        : <>{backfillFilesTotal.toLocaleString()} files</>}
+                    </span>
+                    {backfillFilePct !== null && <span className="font-semibold">{backfillFilePct}%</span>}
+                  </div>
+                  <div className="w-full h-2 bg-amber-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                      style={{ width: `${backfillFilePct ?? 0}%` }}
                     />
                   </div>
                 </div>
               )}
 
-              {elapsedSecs !== null && (
-                <div className="text-[10px] text-blue-500">
-                  Elapsed: {fmtElapsed(elapsedSecs)}
+              {/* Remaining queue */}
+              {backfillQueue.length > 0 && (
+                <div className="pt-1 border-t border-amber-200">
+                  <p className="text-[10px] text-amber-600 font-medium mb-1.5">
+                    Remaining ({backfillQueue.length}):
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {backfillQueue.map((acc, i) => (
+                      <span
+                        key={acc}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium"
+                      >
+                        {i + 1}. {acc}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -288,24 +364,6 @@ export default function SyncPage() {
         {/* Status table */}
         <div className="lg:col-span-2 space-y-3">
 
-          {/* Backfill banner */}
-          {isBackfilling && (
-            <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-3">
-              <svg className="w-4 h-4 text-amber-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
-              <div className="flex-1 min-w-0">
-                <span className="text-xs font-semibold text-amber-800">Background backfill running</span>
-                <span className="text-xs text-amber-600 ml-2">
-                  {backfillCurrent
-                    ? <>Processing <span className="font-semibold">{backfillCurrent}</span>{backfillQueuedCount > 0 ? ` · ${backfillQueuedCount} account${backfillQueuedCount > 1 ? 's' : ''} queued` : ''}</>
-                    : 'Loading historical data into the database'}
-                </span>
-              </div>
-              <span className="text-[10px] text-amber-500 font-medium bg-amber-100 px-2 py-0.5 rounded-full flex-shrink-0">sii-backfill</span>
-            </div>
-          )}
 
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">

@@ -334,6 +334,9 @@ async def sync_status(
     backfill_current = (backfill.get("current") or "").upper()
     backfill_queue = [a.upper() for a in (backfill.get("queue") or [])]
     backfill_active = bool(backfill_current)
+    backfill_files_total: int | None = backfill.get("files_total")
+    backfill_accounts_done: int | None = backfill.get("accounts_done")
+    backfill_accounts_total: int | None = backfill.get("accounts_total")
 
     for acc in ACCOUNT_SCHEMA_MAP:
         prev = _sync_state.get(acc, _make_status(acc))
@@ -390,6 +393,11 @@ async def sync_status(
                 current_account=acc,
                 next_run=next_run,
                 phase="backfill",
+                files_done=db_ok or None,
+                files_total=backfill_files_total,
+                backfill_queue=backfill_queue,
+                backfill_accounts_done=backfill_accounts_done,
+                backfill_accounts_total=backfill_accounts_total,
             ))
         else:
             data = prev.model_dump()

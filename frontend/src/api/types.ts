@@ -65,6 +65,9 @@ export interface SyncStatus {
   files_done: number | null
   files_total: number | null
   backfill_queued: boolean
+  backfill_queue: string[] | null
+  backfill_accounts_done: number | null
+  backfill_accounts_total: number | null
 }
 
 export interface MissingPeriod {
