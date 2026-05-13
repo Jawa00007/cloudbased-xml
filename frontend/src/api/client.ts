@@ -57,7 +57,12 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: hasBody ? JSON.stringify(body) : undefined,
   })
   if (res.status === 401) { logout(); throw new Error('Session expired') }
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
+  if (!res.ok) {
+    const text = await res.text()
+    let detail = text
+    try { detail = JSON.parse(text).detail ?? text } catch { /* raw text fallback */ }
+    throw new Error(detail)
+  }
   return res.json() as Promise<T>
 }
 

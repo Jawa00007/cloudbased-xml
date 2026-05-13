@@ -48,7 +48,7 @@ from backend.api.schemas import SyncStatusOut, SyncTriggerOut
 from backend.core.config import settings
 from backend.db.session import get_session
 from backend.ingestion.ingest import ACCOUNT_SCHEMA_MAP, ingest_account, ingest_all, schema_for
-from backend.ingestion.lock import guard
+from backend.ingestion.lock import backfill_active, backfill_detail, guard
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["sync"])
@@ -265,11 +265,10 @@ async def trigger_sync_all(
     background_tasks: BackgroundTasks,
     _: Annotated[str, Depends(require_auth)],
 ) -> SyncTriggerOut:
+    if backfill_active():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=backfill_detail())
     if not guard.claim("api"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=_conflict_detail(),
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_conflict_detail())
     background_tasks.add_task(_run_ingest, None)
     return SyncTriggerOut(message="Ingestion started for all accounts", account_id=None)
 
@@ -285,11 +284,10 @@ async def trigger_sync_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown account: {account!r}",
         )
+    if backfill_active():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=backfill_detail())
     if not guard.claim("api"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=_conflict_detail(),
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_conflict_detail())
     background_tasks.add_task(_run_ingest, account)
     return SyncTriggerOut(message=f"Ingestion started for {account}", account_id=account)
 

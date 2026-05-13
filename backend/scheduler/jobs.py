@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from backend.ingestion.ingest import ingest_all
-from backend.ingestion.lock import guard
+from backend.ingestion.lock import backfill_active, guard
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,9 @@ scheduler = AsyncIOScheduler()
 
 
 async def _nightly_ingest() -> None:
+    if backfill_active():
+        logger.info("Nightly scheduler: skipping — historical backfill is still running")
+        return
     if not guard.claim("scheduler"):
         logger.warning(
             "Nightly scheduler: skipping — ingestion already running "

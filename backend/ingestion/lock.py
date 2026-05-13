@@ -12,7 +12,9 @@ race window that would exist if the lock were acquired inside the task.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 
 class IngestionGuard:
@@ -69,3 +71,30 @@ class IngestionGuard:
 
 # Module-level singleton — shared by the scheduler and the API routes
 guard = IngestionGuard()
+
+
+def backfill_active() -> bool:
+    """Return True if the external sii-backfill Docker container is currently running."""
+    try:
+        from backend.core.config import settings  # deferred to avoid import cycles
+        p = Path(settings.SII_DATA_PATH) / ".backfill_status.json"
+        return p.exists() and bool(json.loads(p.read_text()).get("running"))
+    except Exception:
+        return False
+
+
+def backfill_detail() -> str:
+    """Human-readable description of the active backfill for 409 responses."""
+    try:
+        from backend.core.config import settings
+        p = Path(settings.SII_DATA_PATH) / ".backfill_status.json"
+        data = json.loads(p.read_text())
+        current = data.get("current", "?")
+        done = data.get("accounts_done", 0)
+        total = data.get("accounts_total", 0)
+        return (
+            f"Historical backfill is running (current account: {current}, "
+            f"{done}/{total} accounts done). Manual sync blocked to prevent conflicts."
+        )
+    except Exception:
+        return "Historical backfill is running. Manual sync blocked to prevent conflicts."
