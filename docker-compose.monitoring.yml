@@ -55,7 +55,7 @@ services:
 networks:
   internal:
     external: true
-    name: cloudbasedxml_internal
+    name: sii_internal
 
 volumes:
   prometheus_data:
