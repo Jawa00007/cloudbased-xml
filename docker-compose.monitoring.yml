@@ -56,8 +56,6 @@ services:
 
 networks:
   internal:
-    external: true
-    name: sii_internal
 
 volumes:
   prometheus_data:
