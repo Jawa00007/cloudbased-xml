@@ -20,28 +20,29 @@ branch_labels = None
 depends_on = None
 
 
-def _get_active_schemas(conn) -> list[str]:
-    rows = conn.execute(text("SELECT schema_name FROM public.accounts WHERE active = TRUE")).fetchall()
-    return [r[0] for r in rows]
+def _column_exists(conn, column: str) -> bool:
+    """Check if column exists in forecast_periods in the current search_path schema."""
+    row = conn.execute(text(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'forecast_periods' AND column_name = :col "
+        "AND table_schema = current_schema()"
+    ), {"col": column}).fetchone()
+    return row is not None
 
 
 def upgrade() -> None:
+    # env.py already iterates schemas and sets SET search_path per schema.
+    # This migration only needs to operate on the current schema.
     conn = op.get_bind()
-    for schema in _get_active_schemas(conn):
-        conn.execute(text(
-            f"ALTER TABLE {schema}.forecast_periods RENAME COLUMN ea_mwh TO ea_kwh"
-        ))
-        conn.execute(text(
-            f"ALTER TABLE {schema}.forecast_periods RENAME COLUMN ea_mwh_with_loss TO ea_kwh_with_loss"
-        ))
+    if _column_exists(conn, "ea_mwh"):
+        conn.execute(text("ALTER TABLE forecast_periods RENAME COLUMN ea_mwh TO ea_kwh"))
+    if _column_exists(conn, "ea_mwh_with_loss"):
+        conn.execute(text("ALTER TABLE forecast_periods RENAME COLUMN ea_mwh_with_loss TO ea_kwh_with_loss"))
 
 
 def downgrade() -> None:
     conn = op.get_bind()
-    for schema in _get_active_schemas(conn):
-        conn.execute(text(
-            f"ALTER TABLE {schema}.forecast_periods RENAME COLUMN ea_kwh TO ea_mwh"
-        ))
-        conn.execute(text(
-            f"ALTER TABLE {schema}.forecast_periods RENAME COLUMN ea_kwh_with_loss TO ea_mwh_with_loss"
-        ))
+    if _column_exists(conn, "ea_kwh"):
+        conn.execute(text("ALTER TABLE forecast_periods RENAME COLUMN ea_kwh TO ea_mwh"))
+    if _column_exists(conn, "ea_kwh_with_loss"):
+        conn.execute(text("ALTER TABLE forecast_periods RENAME COLUMN ea_kwh_with_loss TO ea_mwh_with_loss"))
