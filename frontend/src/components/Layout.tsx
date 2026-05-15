@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { logout } from '../api/client'
+import DinamoLogo from './DinamoLogo'
 
 const NAV = [
   {
@@ -66,14 +67,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <aside className="w-56 flex-shrink-0 bg-white border-r border-slate-100 flex flex-col">
         {/* Brand */}
         <div className="px-5 pt-6 pb-5">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center shadow-sm">
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-            </div>
+          <div className="flex items-center gap-2.5">
+            <DinamoLogo size={34} />
             <div>
-              <p className="text-[13px] font-semibold text-slate-900 leading-none">SII Energy</p>
+              <p className="text-[13px] font-semibold text-slate-900 leading-none tracking-tight">QUANTA</p>
               <p className="text-[10px] text-slate-400 mt-0.5 leading-none">Analytics Platform</p>
             </div>
           </div>
@@ -113,7 +110,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </svg>
             Sign out
           </button>
-          <p className="text-[10px] text-slate-300 px-3">v1.0 · SII Platform</p>
+          <p className="text-[10px] text-slate-300 px-3">v1.0 · QUANTA</p>
         </div>
       </aside>
 

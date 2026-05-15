@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login } from '../api/client'
+import DinamoLogo from '../components/DinamoLogo'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -29,14 +30,10 @@ export default function LoginPage() {
 
         {/* Logo */}
         <div className="flex items-center gap-3 justify-center mb-10">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl flex items-center justify-center shadow-md shadow-blue-200">
-            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          </div>
+          <DinamoLogo size={48} />
           <div>
-            <p className="text-base font-bold text-slate-900 leading-none tracking-tight">SII Energy</p>
-            <p className="text-xs text-slate-400 mt-0.5">Analytics Platform</p>
+            <p className="text-xl font-bold text-slate-900 leading-none tracking-tight">QUANTA</p>
+            <p className="text-sm text-slate-400 mt-1 leading-none">Analytics Platform</p>
           </div>
         </div>
 

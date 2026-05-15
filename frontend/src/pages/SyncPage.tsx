@@ -478,8 +478,7 @@ export default function SyncPage() {
               </>
             )}
           </div>
-        </div> {/* end status table card */}
-        </div> {/* end lg:col-span-2 space-y-3 */}
+        </div>
       </div>
     </div>
   )
