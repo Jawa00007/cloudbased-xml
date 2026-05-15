@@ -14,10 +14,14 @@ class ForecastPeriod(Base):
     """
     One row per (account_id, pod, forecast_date, periodo).
 
-    Values are stored in MWh (kWh / 1000), rounded to 3 decimals.
+    Values are stored in kWh (full precision — NOT pre-rounded MWh).
     Two values per period:
-      - ea_mwh            : raw energy from source (prev year or estimated)
-      - ea_mwh_with_loss  : after applying the configured grid loss percentage
+      - ea_kwh            : raw energy from source (prev year or estimated)
+      - ea_kwh_with_loss  : after applying the configured grid loss percentage
+
+    MWh conversion (÷1000, round to 3dp) happens ONLY at aggregation time in SQL
+    (ROUND(SUM(ea_kwh_with_loss) / 1000.0, 3)) so that summing many PODs within
+    a dispatching point does not accumulate per-POD rounding errors.
 
     source_type codes:
       E         — copied from measurements (TipoDato=E)
@@ -44,8 +48,8 @@ class ForecastPeriod(Base):
     forecast_date: Mapped[date] = mapped_column(Date, nullable=False)
     source_date: Mapped[date | None] = mapped_column(Date)                # prev-year date used as template
     periodo: Mapped[int] = mapped_column(SmallInteger, nullable=False)    # 1–96
-    ea_mwh: Mapped[float | None] = mapped_column(Numeric(14, 6))
-    ea_mwh_with_loss: Mapped[float | None] = mapped_column(Numeric(14, 6))
+    ea_kwh: Mapped[float | None] = mapped_column(Numeric(14, 6))
+    ea_kwh_with_loss: Mapped[float | None] = mapped_column(Numeric(14, 6))
     loss_pct: Mapped[float | None] = mapped_column(Numeric(7, 5))
     source_type: Mapped[str] = mapped_column(Text, nullable=False)        # E/S/filled/estimated/padded
     created_at: Mapped[datetime] = mapped_column(

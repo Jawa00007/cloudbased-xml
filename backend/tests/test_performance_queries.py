@@ -66,8 +66,8 @@ class _FRow:
     forecast_date: date
     source_date: date | None
     periodo: int
-    ea_mwh: float
-    ea_mwh_with_loss: float
+    ea_kwh: float
+    ea_kwh_with_loss: float
     loss_pct: float
     source_type: str
 

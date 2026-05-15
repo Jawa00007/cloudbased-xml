@@ -581,7 +581,7 @@ async def export_forecast_pods(
                     fp.pod,
                     fp.forecast_date,
                     fp.periodo,
-                    fp.ea_mwh,
+                    ROUND(fp.ea_kwh / 1000.0, 6) AS ea_mwh,
                     fp.source_type,
                     COALESCE(me.source_file, ms.source_file) AS source_file
                 FROM forecast_periods fp
@@ -716,7 +716,10 @@ async def get_forecast(
         if pod:
             rows = await session.execute(text("""
                 SELECT pod, mese_anno, punto_dispacciamento, forecast_date, source_date,
-                       periodo, ea_mwh, ea_mwh_with_loss, loss_pct, source_type
+                       periodo,
+                       ROUND(ea_kwh / 1000.0, 6) AS ea_mwh,
+                       ROUND(ea_kwh_with_loss / 1000.0, 6) AS ea_mwh_with_loss,
+                       loss_pct, source_type
                 FROM forecast_periods
                 WHERE account_id = :acct AND mese_anno = :ma AND pod = :pod
                 ORDER BY forecast_date, periodo
@@ -725,7 +728,10 @@ async def get_forecast(
         else:
             rows = await session.execute(text("""
                 SELECT pod, mese_anno, punto_dispacciamento, forecast_date, source_date,
-                       periodo, ea_mwh, ea_mwh_with_loss, loss_pct, source_type
+                       periodo,
+                       ROUND(ea_kwh / 1000.0, 6) AS ea_mwh,
+                       ROUND(ea_kwh_with_loss / 1000.0, 6) AS ea_mwh_with_loss,
+                       loss_pct, source_type
                 FROM forecast_periods
                 WHERE account_id = :acct AND mese_anno = :ma
                 ORDER BY pod, forecast_date, periodo

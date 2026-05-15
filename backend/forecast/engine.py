@@ -9,7 +9,7 @@ Pipeline per POD:
        - Missing day  → carry forward last available day  (source_type = "filled")
        - No data at all → CONSUMO_TOT / 365 × dispatching weights (source_type = "estimated")
        - Pad to 31 days → repeat last day (source_type = "padded")
-  5. Apply grid-loss adjustment and convert kWh → MWh (÷1000, round 3dp)
+  5. Apply grid-loss adjustment (result stored in kWh for full precision)
   6. Upsert into forecast_periods table
 """
 
@@ -27,7 +27,6 @@ from backend.forecast.loss_calculator import (
     LossRule,
     apply_loss,
     calculate_loss_pct,
-    kwh_to_mwh,
 )
 from backend.forecast.missing_data import FilledPeriod, build_forecast_month
 
@@ -45,8 +44,8 @@ class ForecastRow:
     forecast_date: date
     source_date: date | None
     periodo: int
-    ea_mwh: float | None
-    ea_mwh_with_loss: float | None
+    ea_kwh: float | None
+    ea_kwh_with_loss: float | None
     loss_pct: float
     source_type: str
 
@@ -273,9 +272,7 @@ async def generate_forecast(
         )
 
         for fp in filled:
-            ea_mwh           = kwh_to_mwh(fp.ea_kwh)
             ea_kwh_with_loss = apply_loss(fp.ea_kwh, loss_pct)
-            ea_mwh_with_loss = kwh_to_mwh(ea_kwh_with_loss)
 
             all_rows.append(ForecastRow(
                 account_id=account_id,
@@ -285,8 +282,8 @@ async def generate_forecast(
                 forecast_date=fp.forecast_date,
                 source_date=fp.source_date,
                 periodo=fp.periodo,
-                ea_mwh=ea_mwh,
-                ea_mwh_with_loss=ea_mwh_with_loss,
+                ea_kwh=fp.ea_kwh,
+                ea_kwh_with_loss=ea_kwh_with_loss,
                 loss_pct=loss_pct,
                 source_type=fp.source_type,
             ))
@@ -308,7 +305,7 @@ async def get_forecast_by_dp(
     rows = await session.execute(text("""
         SELECT forecast_date,
                COALESCE(punto_dispacciamento, 'Unknown') AS dp,
-               SUM(ea_mwh_with_loss) AS daily_mwh
+               ROUND(SUM(ea_kwh_with_loss) / 1000.0, 3) AS daily_mwh
         FROM forecast_periods
         WHERE account_id = :acct AND mese_anno = :ma
         GROUP BY forecast_date, dp
@@ -355,7 +352,7 @@ async def get_forecast_periods_by_dp(
         SELECT forecast_date,
                periodo,
                COALESCE(punto_dispacciamento, 'Unknown') AS dp,
-               SUM(ea_mwh_with_loss) AS period_mwh
+               ROUND(SUM(ea_kwh_with_loss) / 1000.0, 6) AS period_mwh
         FROM forecast_periods
         WHERE account_id = :acct AND mese_anno = :ma
         GROUP BY forecast_date, periodo, dp
@@ -408,7 +405,7 @@ async def get_forecast_ea_matrix(
         SELECT COALESCE(punto_dispacciamento, 'Unknown') AS zona,
                forecast_date,
                periodo,
-               SUM(ea_mwh_with_loss) AS value
+               ROUND(SUM(ea_kwh_with_loss) / 1000.0, 6) AS value
         FROM forecast_periods
         WHERE account_id = :acct AND mese_anno = :ma
         GROUP BY zona, forecast_date, periodo
