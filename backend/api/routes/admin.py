@@ -51,7 +51,7 @@ class ContainerStatus(BaseModel):
 
 
 class SchemaSize(BaseModel):
-    schema: str
+    schema_name: str
     size_mb: float
     est_rows: int
 
@@ -118,7 +118,7 @@ async def get_system_status(auth: _AdminAuth) -> SystemStatus:
 
             # Per-schema sizes (fast — pg_class, no table scan)
             rows = (await s.execute(text("""
-                SELECT n.nspname AS schema,
+                SELECT n.nspname AS schema_name,
                        SUM(pg_total_relation_size(c.oid)) / 1048576.0 AS size_mb,
                        SUM(c.reltuples::bigint) AS est_rows
                 FROM pg_class c
@@ -130,7 +130,7 @@ async def get_system_status(auth: _AdminAuth) -> SystemStatus:
             """))).fetchall()
             db_schemas = [
                 SchemaSize(
-                    schema=r[0],
+                    schema_name=r[0],
                     size_mb=round(float(r[1]), 1),
                     est_rows=int(r[2]) if r[2] else 0,
                 )

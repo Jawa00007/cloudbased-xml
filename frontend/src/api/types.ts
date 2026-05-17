@@ -191,7 +191,7 @@ export interface ContainerStatus {
 }
 
 export interface SchemaSize {
-  schema: string
+  schema_name: string
   size_mb: number
   est_rows: number
 }

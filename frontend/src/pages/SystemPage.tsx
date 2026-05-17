@@ -38,7 +38,7 @@ function ContainerRow({ c }: { c: ContainerStatus }) {
 function SchemaRow({ s }: { s: SchemaSize }) {
   return (
     <tr className="border-t border-slate-50 hover:bg-slate-50 transition-colors">
-      <td className="px-5 py-2.5 text-xs font-mono text-slate-700">{s.schema}</td>
+      <td className="px-5 py-2.5 text-xs font-mono text-slate-700">{s.schema_name}</td>
       <td className="px-4 py-2.5 text-xs tabular-nums text-right text-slate-600">{s.size_mb.toLocaleString()} MB</td>
       <td className="px-4 py-2.5 text-xs tabular-nums text-right text-slate-500">
         {s.est_rows > 0 ? `~${(s.est_rows / 1_000_000).toFixed(1)}M` : '—'}
@@ -169,7 +169,7 @@ export default function SystemPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {status.db_schemas.map(s => <SchemaRow key={s.schema} s={s} />)}
+                  {status.db_schemas.map(s => <SchemaRow key={s.schema_name} s={s} />)}
                 </tbody>
               </table>
             )}
