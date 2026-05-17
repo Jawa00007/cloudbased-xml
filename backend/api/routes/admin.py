@@ -158,7 +158,7 @@ async def get_system_status(auth: _AdminAuth) -> SystemStatus:
 async def upload_anagrafica(
     account_id: str,
     file: UploadFile,
-    _: Auth,
+    _: _Auth,
 ) -> AnagraficaUploadOut:
     data = await file.read()
     filename = file.filename or "upload.csv"
@@ -190,7 +190,7 @@ async def upload_anagrafica(
 )
 async def list_anagrafica_months(
     account_id: str,
-    _: Auth,
+    _: _Auth,
 ) -> list[str]:
     schema = schema_for(account_id)
     async with get_session(schema) as session:
@@ -210,7 +210,7 @@ async def list_anagrafica_months(
 async def list_anagrafica(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    _: _Auth,
 ) -> list[AnagraficaOut]:
     schema = schema_for(account_id)
     async with get_session(schema) as session:
@@ -233,7 +233,7 @@ async def list_anagrafica(
 async def delete_anagrafica(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    _: _Auth,
 ) -> None:
     schema = schema_for(account_id)
     async with get_session(schema) as session:
@@ -251,7 +251,7 @@ async def delete_anagrafica(
     summary="List loss config rules (global + account-specific)",
 )
 async def list_loss_config(
-    _: Auth,
+    _: _Auth,
     account_id: str | None = None,
 ) -> list[LossRuleOut]:
     async with get_public_session() as session:
@@ -281,7 +281,7 @@ async def list_loss_config(
 )
 async def create_loss_rule(
     body: LossRuleIn,
-    _: Auth,
+    _: _Auth,
 ) -> LossRuleOut:
     table = LossConfig.__table__
     async with get_public_session() as session:
@@ -313,7 +313,7 @@ async def create_loss_rule(
 async def update_loss_rule(
     rule_id: int,
     body: LossRuleIn,
-    _: Auth,
+    _: _Auth,
 ) -> LossRuleOut:
     async with get_public_session() as session:
         rows = await session.execute(text("""
@@ -348,7 +348,7 @@ async def update_loss_rule(
 )
 async def delete_loss_rule(
     rule_id: int,
-    _: Auth,
+    _: _Auth,
 ) -> None:
     async with get_public_session() as session:
         result = await session.execute(
@@ -366,7 +366,7 @@ async def delete_loss_rule(
     summary="List dispatching weights — global (no account_id) or per-account",
 )
 async def list_dispatching_config(
-    _: Auth,
+    _: _Auth,
     account_id: str | None = None,
     punto_dispacciamento: str | None = None,
 ) -> list[DispatchingWeightOut]:
@@ -412,7 +412,7 @@ async def list_dispatching_config(
 )
 async def set_dispatching_weights(
     body: DispatchingWeightIn,
-    _: Auth,
+    _: _Auth,
     account_id: str | None = None,
 ) -> dict:
     if len(body.weights) != 96:
@@ -467,7 +467,7 @@ async def set_dispatching_weights(
 )
 async def delete_dispatching_config(
     punto_dispacciamento: str,
-    _: Auth,
+    _: _Auth,
     account_id: str | None = None,
 ) -> None:
     async with get_public_session() as session:
