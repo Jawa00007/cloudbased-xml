@@ -435,8 +435,8 @@ async def upsert_forecast_periods(
             "forecast_date": r.forecast_date,
             "source_date": r.source_date,
             "periodo": r.periodo,
-            "ea_mwh": r.ea_mwh,
-            "ea_mwh_with_loss": r.ea_mwh_with_loss,
+            "ea_kwh": r.ea_kwh,
+            "ea_kwh_with_loss": r.ea_kwh_with_loss,
             "loss_pct": r.loss_pct,
             "source_type": r.source_type,
         })

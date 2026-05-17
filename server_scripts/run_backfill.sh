@@ -159,8 +159,8 @@ for i in "${!ACCOUNT_LIST[@]}"; do
         fi
 
         DONE=$((DONE + BATCH_COUNT))
-        write_status "$ACC" "$DONE" "$TODO_COUNT" "$i" "$TOTAL_ACCOUNTS"
-        log "$ACC: $DONE/$TODO_COUNT done | $(free_gb)GB free"
+        write_status "$ACC" "$DONE" "$REMOTE_TOTAL" "$i" "$TOTAL_ACCOUNTS"
+        log "$ACC: $DONE/$TODO_COUNT todo-done, $(( PROCESSED_COUNT + DONE ))/$REMOTE_TOTAL total | $(free_gb)GB free"
     done
 
     log "$ACC: COMPLETE"
