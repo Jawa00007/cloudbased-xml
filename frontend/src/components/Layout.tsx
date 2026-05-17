@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { logout } from '../api/client'
+import { logout, getCurrentUser } from '../api/client'
 import DinamoLogo from './DinamoLogo'
 
 const NAV = [
@@ -61,6 +61,9 @@ const NAV = [
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {
+  const currentUser = getCurrentUser()
+  const isAdmin = currentUser?.is_admin ?? false
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
       {/* Sidebar */}
@@ -97,6 +100,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {label}
             </NavLink>
           ))}
+          {isAdmin && (
+            <NavLink
+              to="/system"
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-all ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'
+                }`
+              }
+            >
+              <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18" />
+              </svg>
+              System
+            </NavLink>
+          )}
         </nav>
 
         {/* Footer */}

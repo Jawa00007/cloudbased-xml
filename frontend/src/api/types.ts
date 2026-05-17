@@ -150,6 +150,59 @@ export interface CompareDPOut {
   previous_total_mwh: number
 }
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+export interface User {
+  id: number
+  username: string
+  is_admin: boolean
+  allowed_accounts: string[] | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface UserCreate {
+  username: string
+  password: string
+  is_admin: boolean
+  allowed_accounts: string[] | null
+}
+
+export interface UserUpdate {
+  password?: string | null
+  is_admin?: boolean | null
+  allowed_accounts?: string[] | null
+  is_active?: boolean | null
+}
+
+// ── System status ─────────────────────────────────────────────────────────────
+
+export interface DiskStatus {
+  total_gb: number
+  used_gb: number
+  free_gb: number
+  used_pct: number
+}
+
+export interface ContainerStatus {
+  name: string
+  status: string
+  healthy: boolean | null
+}
+
+export interface SchemaSize {
+  schema: string
+  size_mb: number
+  est_rows: number
+}
+
+export interface SystemStatus {
+  disk: DiskStatus
+  containers: ContainerStatus[]
+  db_size_gb: number
+  db_schemas: SchemaSize[]
+}
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 
 export interface LossRule {

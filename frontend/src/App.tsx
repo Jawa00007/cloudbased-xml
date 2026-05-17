@@ -10,6 +10,7 @@ import SyncPage from './pages/SyncPage'
 import MonitoringPage from './pages/MonitoringPage'
 import ForecastPage from './pages/ForecastPage'
 import AdminPage from './pages/AdminPage'
+import SystemPage from './pages/SystemPage'
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
                 <Route path="/monitoring" element={<MonitoringPage />} />
                 <Route path="/forecast" element={<ForecastPage />} />
                 <Route path="/admin" element={<AdminPage />} />
+                <Route path="/system" element={<SystemPage />} />
               </Routes>
             </Layout>
           </ProtectedRoute>

@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, check_account_access, require_auth
 from backend.api.schemas import FileLogOut
 from backend.db.session import get_session
 from backend.ingestion.ingest import schema_for
@@ -21,8 +21,9 @@ async def list_files(
     status: Annotated[str | None, Query(description="ok | error | skipped")] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
-    _: Annotated[str, Depends(require_auth)] = None,
+    auth: Annotated[Auth, Depends(require_auth)] = None,
 ) -> list[FileLogOut]:
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         if status:

@@ -15,10 +15,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/token", response_model=TokenResponse)
 async def login(body: LoginRequest) -> TokenResponse:
-    if not authenticate_user(body.username, body.password):
+    auth = await authenticate_user(body.username, body.password)
+    if not auth:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
         )
-    token, expires_in = create_access_token(body.username)
+    token, expires_in = create_access_token(
+        username=auth.username,
+        is_admin=auth.is_admin,
+        allowed_accounts=auth.allowed_accounts,
+    )
     return TokenResponse(access_token=token, expires_in=expires_in)

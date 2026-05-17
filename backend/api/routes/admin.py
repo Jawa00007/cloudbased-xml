@@ -1,16 +1,20 @@
 """
-Admin routes — ANAGRAFICA upload, loss config CRUD, dispatching config CRUD.
+Admin routes — ANAGRAFICA upload, loss config CRUD, dispatching config CRUD,
+system status.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import delete, text
 from sqlalchemy.dialects.postgresql import insert
 
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, require_admin, require_auth
 from backend.api.schemas import (
     AnagraficaOut,
     AnagraficaUploadOut,
@@ -27,7 +31,120 @@ from backend.parser.anagrafica_parser import parse_anagrafica_bytes
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-Auth = Annotated[str, Depends(require_auth)]
+_Auth = Annotated[str, Depends(require_auth)]
+_AdminAuth = Annotated[Auth, Depends(require_admin)]
+
+
+# ── System status ──────────────────────────────────────────────────────────────
+
+class DiskStatus(BaseModel):
+    total_gb: float
+    used_gb: float
+    free_gb: float
+    used_pct: int
+
+
+class ContainerStatus(BaseModel):
+    name: str
+    status: str
+    healthy: bool | None
+
+
+class SchemaSize(BaseModel):
+    schema: str
+    size_mb: float
+    est_rows: int
+
+
+class SystemStatus(BaseModel):
+    disk: DiskStatus
+    containers: list[ContainerStatus]
+    db_size_gb: float
+    db_schemas: list[SchemaSize]
+
+
+@router.get("/system/status", response_model=SystemStatus, summary="Server & DB health (admin only)")
+async def get_system_status(auth: _AdminAuth) -> SystemStatus:
+    # Disk usage via df
+    disk = DiskStatus(total_gb=0, used_gb=0, free_gb=0, used_pct=0)
+    try:
+        df = subprocess.run(
+            ["df", "-BG", "/"], capture_output=True, text=True, timeout=5
+        )
+        parts = df.stdout.strip().splitlines()[-1].split()
+        # parts: Filesystem 1G-blocks Used Available Use% Mounted
+        total = int(parts[1].rstrip("G"))
+        used  = int(parts[2].rstrip("G"))
+        free  = int(parts[3].rstrip("G"))
+        pct   = int(parts[4].rstrip("%"))
+        disk  = DiskStatus(total_gb=total, used_gb=used, free_gb=free, used_pct=pct)
+    except Exception:
+        pass
+
+    # Container statuses via docker ps
+    containers: list[ContainerStatus] = []
+    try:
+        dp = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=10
+        )
+        for line in dp.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            c = json.loads(line)
+            name   = c.get("Names", "")
+            state  = c.get("State", "unknown")
+            health = c.get("Health", "")
+            healthy: bool | None = None
+            if health == "healthy":
+                healthy = True
+            elif health in ("unhealthy", "starting"):
+                healthy = False
+            containers.append(ContainerStatus(name=name, status=state, healthy=healthy))
+    except Exception:
+        pass
+
+    # DB total size + per-schema breakdown
+    db_size_gb = 0.0
+    db_schemas: list[SchemaSize] = []
+    try:
+        async with get_public_session() as s:
+            # Total DB size
+            row = (await s.execute(text(
+                "SELECT pg_database_size(current_database()) AS sz"
+            ))).fetchone()
+            if row:
+                db_size_gb = round(row[0] / (1024 ** 3), 2)
+
+            # Per-schema sizes (fast — pg_class, no table scan)
+            rows = (await s.execute(text("""
+                SELECT n.nspname AS schema,
+                       SUM(pg_total_relation_size(c.oid)) / 1048576.0 AS size_mb,
+                       SUM(c.reltuples::bigint) AS est_rows
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                  AND c.relkind = 'r'
+                GROUP BY n.nspname
+                ORDER BY SUM(pg_total_relation_size(c.oid)) DESC
+            """))).fetchall()
+            db_schemas = [
+                SchemaSize(
+                    schema=r[0],
+                    size_mb=round(float(r[1]), 1),
+                    est_rows=int(r[2]) if r[2] else 0,
+                )
+                for r in rows
+            ]
+    except Exception:
+        pass
+
+    return SystemStatus(
+        disk=disk,
+        containers=containers,
+        db_size_gb=db_size_gb,
+        db_schemas=db_schemas,
+    )
 
 
 # ── ANAGRAFICA upload ─────────────────────────────────────────────────────────

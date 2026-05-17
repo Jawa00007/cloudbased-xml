@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 
 from backend.aggregation.engine import get_period_data, get_period_range, get_pods
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, check_account_access, require_auth
 from backend.api.schemas import MeasurementOut, PeriodOut, PodMetadataOut, TotalizerOut
 from backend.db.session import get_session
 from backend.ingestion.ingest import schema_for
@@ -31,8 +31,9 @@ def _resolve_schema(account: str) -> str:
 @router.get("/pods", response_model=list[str])
 async def list_pods(
     account: Annotated[str, Query(description="Account name, e.g. BAT")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[str]:
+    check_account_access(account, auth)
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         return await get_pods(session, account)
@@ -43,8 +44,9 @@ async def get_measurements(
     account: Annotated[str, Query()],
     pod: Annotated[str, Query()],
     date_: Annotated[date, Query(alias="date", description="YYYY-MM-DD")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[PeriodOut]:
+    check_account_access(account, auth)
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         rows = await get_period_data(session, account, pod, date_)
@@ -64,8 +66,9 @@ async def get_measurements_month(
     account: Annotated[str, Query()],
     pod: Annotated[str, Query()],
     mese_anno: Annotated[str, Query(description="MM/YYYY")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[MeasurementOut]:
+    check_account_access(account, auth)
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         # Prefer E; include S only for days missing E
@@ -111,8 +114,9 @@ async def get_totals(
     account: Annotated[str, Query()],
     pod: Annotated[str, Query()],
     mese_anno: Annotated[str, Query(description="MM/YYYY")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[TotalizerOut]:
+    check_account_access(account, auth)
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         result = await session.execute(text("""
@@ -148,8 +152,9 @@ async def get_measurements_range(
     from_date: Annotated[date, Query(description="YYYY-MM-DD")],
     to_date: Annotated[date, Query(description="YYYY-MM-DD")],
     tipo_dato: Annotated[str | None, Query(description="E or S")] = None,
-    _: Annotated[str, Depends(require_auth)] = None,
+    auth: Annotated[Auth, Depends(require_auth)] = None,
 ) -> list[PeriodOut]:
+    check_account_access(account, auth)
     if (to_date - from_date).days > 31:
         raise HTTPException(status_code=400, detail="Date range cannot exceed 31 days")
     schema = _resolve_schema(account)
@@ -164,8 +169,9 @@ async def get_measurements_range(
 @router.get("/pod_metadata", response_model=list[PodMetadataOut])
 async def get_pod_metadata(
     account: Annotated[str, Query()],
-    _: Annotated[str, Depends(require_auth)] = None,
+    auth: Annotated[Auth, Depends(require_auth)] = None,
 ) -> list[PodMetadataOut]:
+    check_account_access(account, auth)
     schema = _resolve_schema(account)
     async with get_session(schema) as session:
         result = await session.execute(text("""

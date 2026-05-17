@@ -18,7 +18,7 @@ from backend.aggregation.engine import (
     get_monthly_totals_all_pods,
     get_yearly_totals,
 )
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, check_account_access, require_auth
 from backend.api.schemas import DailyTotalOut, MonthlyTotalOut
 from backend.db.session import get_session
 from backend.ingestion.ingest import schema_for
@@ -31,8 +31,9 @@ async def daily_totals(
     account: Annotated[str, Query()],
     pod: Annotated[str, Query()],
     mese_anno: Annotated[str, Query(description="MM/YYYY")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[DailyTotalOut]:
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_daily_totals(session, account, pod, mese_anno)
@@ -48,8 +49,9 @@ async def monthly_totals(
     account: Annotated[str, Query()],
     pod: Annotated[str, Query()],
     year: Annotated[int, Query(ge=2000, le=2100)],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[MonthlyTotalOut]:
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_yearly_totals(session, account, pod, year)
@@ -64,9 +66,10 @@ async def monthly_totals(
 async def monthly_summary(
     account: Annotated[str, Query()],
     mese_anno: Annotated[str, Query(description="MM/YYYY")],
-    _: Annotated[str, Depends(require_auth)],
+    auth: Annotated[Auth, Depends(require_auth)],
 ) -> list[MonthlyTotalOut]:
     """Monthly totals for ALL PODs in an account for a given month."""
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_monthly_totals_all_pods(session, account, mese_anno)

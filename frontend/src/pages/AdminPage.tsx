@@ -7,8 +7,9 @@ import {
   fetchAccounts, fetchLossConfig, createLossRule, updateLossRule, deleteLossRule,
   fetchAnagrafica, uploadAnagrafica, deleteAnagrafica,
   fetchDispatchingConfig, setDispatchingWeights, deleteDispatchingConfig,
+  fetchUsers, createUser, updateUser, deleteUser, getCurrentUser,
 } from '../api/client'
-import type { LossRule } from '../api/types'
+import type { LossRule, User, UserCreate, UserUpdate } from '../api/types'
 import { itNum, itKwh } from '../utils/format'
 
 const COND_LABELS: Record<string, string> = {
@@ -48,9 +49,13 @@ function LossRuleRow({
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
+const EMPTY_USER: UserCreate = { username: '', password: '', is_admin: false, allowed_accounts: [] }
+
 export default function AdminPage() {
   const qc = useQueryClient()
-  const [tab, setTab] = useState<'loss' | 'anagrafica' | 'dispatching'>('loss')
+  const currentUser = getCurrentUser()
+  const isAdmin = currentUser?.is_admin ?? false
+  const [tab, setTab] = useState<'loss' | 'anagrafica' | 'dispatching' | 'users'>('loss')
   const [accountId, setAccountId] = useState(() => sessionStorage.getItem('admin_account') ?? '')
   const [meseAnno, setMeseAnno] = useState(() => sessionStorage.getItem('admin_mese_anno') ?? '')
   const fileRef = useRef<HTMLInputElement>(null)
@@ -71,8 +76,20 @@ export default function AdminPage() {
   const [uploading, setUploading] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  // User management state
+  const [userForm, setUserForm] = useState<UserCreate>({ ...EMPTY_USER })
+  const [editingUserId, setEditingUserId] = useState<number | null>(null)
+  const [showUserForm, setShowUserForm] = useState(false)
+  const [userFormError, setUserFormError] = useState('')
+
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: accounts = [] } = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
+
+  const { data: users = [], isLoading: loadingUsers } = useQuery({
+    queryKey: ['users'],
+    queryFn: fetchUsers,
+    enabled: tab === 'users' && isAdmin,
+  })
 
   const { data: lossRules = [], isLoading: loadingLoss } = useQuery({
     queryKey: ['loss-config', accountId || null],
@@ -154,6 +171,51 @@ export default function AdminPage() {
       qc.invalidateQueries({ queryKey: ['anagrafica', accountId, meseAnno] })
     },
   })
+
+  function closeUserForm() {
+    setShowUserForm(false)
+    setEditingUserId(null)
+    setUserForm({ ...EMPTY_USER })
+    setUserFormError('')
+  }
+
+  function startEditUser(u: User) {
+    setUserForm({ username: u.username, password: '', is_admin: u.is_admin, allowed_accounts: u.allowed_accounts ?? [] })
+    setEditingUserId(u.id)
+    setShowUserForm(true)
+    setUserFormError('')
+  }
+
+  const saveUser = useMutation({
+    mutationFn: async () => {
+      const accts = userForm.is_admin ? null : (userForm.allowed_accounts?.length ? userForm.allowed_accounts : null)
+      if (editingUserId !== null) {
+        const upd: UserUpdate = {
+          is_admin: userForm.is_admin,
+          allowed_accounts: accts,
+          is_active: true,
+        }
+        if (userForm.password) upd.password = userForm.password
+        return updateUser(editingUserId, upd)
+      }
+      return createUser({ ...userForm, allowed_accounts: accts })
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); closeUserForm() },
+    onError: (e: Error) => setUserFormError(e.message),
+  })
+
+  const deactivateUser = useMutation({
+    mutationFn: (id: number) => deleteUser(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  })
+
+  function toggleAccountChip(acct: string) {
+    setUserForm(prev => {
+      const current = prev.allowed_accounts ?? []
+      const next = current.includes(acct) ? current.filter(a => a !== acct) : [...current, acct]
+      return { ...prev, allowed_accounts: next }
+    })
+  }
 
   async function handleUpload(files: FileList) {
     if (!accountId || files.length === 0) return
@@ -251,15 +313,15 @@ export default function AdminPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-slate-100 rounded-xl w-fit">
-        {(['loss', 'anagrafica', 'dispatching'] as const).map(t => (
+        {(['loss', 'anagrafica', 'dispatching', ...(isAdmin ? ['users'] : [])] as const).map(t => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => setTab(t as typeof tab)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
               tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t === 'loss' ? 'Loss Config' : t === 'anagrafica' ? 'ANAGRAFICA' : 'Distribution Weights'}
+            {t === 'loss' ? 'Loss Config' : t === 'anagrafica' ? 'ANAGRAFICA' : t === 'dispatching' ? 'Distribution Weights' : 'Users'}
           </button>
         ))}
       </div>
@@ -695,6 +757,198 @@ export default function AdminPage() {
                 </div>
               </div>
             </>
+        </div>
+      )}
+
+      {/* ── Users tab ── */}
+      {tab === 'users' && isAdmin && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-700">User Accounts</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Manage login credentials and account access.</p>
+              </div>
+              <button
+                onClick={() => showUserForm ? closeUserForm() : setShowUserForm(true)}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                </svg>
+                New User
+              </button>
+            </div>
+
+            {/* Create / Edit form */}
+            {showUserForm && (
+              <div className="px-5 py-4 bg-slate-50 border-b border-slate-100 space-y-4">
+                <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                  {editingUserId !== null ? 'Edit User' : 'New User'}
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 block mb-1">Username</label>
+                    <input
+                      type="text"
+                      value={userForm.username}
+                      disabled={editingUserId !== null}
+                      onChange={e => setUserForm(p => ({ ...p, username: e.target.value }))}
+                      className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white disabled:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="e.g. alice"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 block mb-1">
+                      Password {editingUserId !== null && <span className="text-slate-400">(leave blank to keep)</span>}
+                    </label>
+                    <input
+                      type="password"
+                      value={userForm.password}
+                      onChange={e => setUserForm(p => ({ ...p, password: e.target.value }))}
+                      className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder={editingUserId !== null ? 'Unchanged' : 'Min 6 characters'}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="is_admin"
+                    checked={userForm.is_admin}
+                    onChange={e => setUserForm(p => ({ ...p, is_admin: e.target.checked }))}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <label htmlFor="is_admin" className="text-sm text-slate-700">Administrator (unrestricted access to all accounts)</label>
+                </div>
+
+                {!userForm.is_admin && (
+                  <div>
+                    <label className="text-xs font-medium text-slate-500 block mb-2">
+                      Allowed Accounts <span className="text-slate-400">(click to toggle; none selected = all accounts)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {accounts.map(a => {
+                        const selected = userForm.allowed_accounts?.includes(a.account_id) ?? false
+                        return (
+                          <button
+                            key={a.account_id}
+                            type="button"
+                            onClick={() => toggleAccountChip(a.account_id)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                              selected
+                                ? 'bg-blue-600 text-white border-blue-600'
+                                : 'bg-white text-slate-600 border-slate-200 hover:border-blue-400'
+                            }`}
+                          >
+                            {a.display_name ?? a.account_id}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {userFormError && <p className="text-xs text-red-600">{userFormError}</p>}
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => saveUser.mutate()}
+                    disabled={saveUser.isPending || !userForm.username || (editingUserId === null && !userForm.password)}
+                    className="px-4 py-2 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+                  >
+                    {saveUser.isPending ? 'Saving…' : editingUserId !== null ? 'Update' : 'Create User'}
+                  </button>
+                  <button
+                    onClick={closeUserForm}
+                    className="px-4 py-2 text-xs font-medium text-slate-600 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Users table */}
+            {loadingUsers ? (
+              <div className="px-5 py-8 text-sm text-slate-400 text-center">Loading users…</div>
+            ) : users.length === 0 ? (
+              <div className="px-5 py-8 text-sm text-slate-400 text-center">No users yet. Create the first one above.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="text-xs text-slate-400 uppercase tracking-wide bg-slate-50">
+                    <tr>
+                      <th className="px-5 py-3">Username</th>
+                      <th className="px-4 py-3">Role</th>
+                      <th className="px-4 py-3">Accounts</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map(u => (
+                      <tr key={u.id} className="border-t border-slate-50 hover:bg-slate-50 transition-colors group">
+                        <td className="px-5 py-3 text-xs font-medium text-slate-800">
+                          {u.username}
+                          {u.username === currentUser?.username && (
+                            <span className="ml-1.5 text-xs text-slate-400">(you)</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                            u.is_admin ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {u.is_admin ? 'Admin' : 'User'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {u.allowed_accounts === null || u.is_admin ? (
+                            <span className="text-xs text-slate-400">All accounts</span>
+                          ) : u.allowed_accounts.length === 0 ? (
+                            <span className="text-xs text-slate-400">None</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {u.allowed_accounts.map(a => (
+                                <span key={a} className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full">{a}</span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                            u.is_active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400 line-through'
+                          }`}>
+                            {u.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-3 opacity-0 group-hover:opacity-100 transition-all">
+                            <button
+                              onClick={() => startEditUser(u)}
+                              className="text-xs text-blue-500 hover:text-blue-700"
+                            >
+                              Edit
+                            </button>
+                            {u.username !== currentUser?.username && (
+                              <button
+                                onClick={() => deactivateUser.mutate(u.id)}
+                                disabled={deactivateUser.isPending}
+                                className="text-xs text-red-400 hover:text-red-600"
+                              >
+                                {u.is_active ? 'Deactivate' : 'Reactivate'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

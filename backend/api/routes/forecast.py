@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, check_account_access, require_auth
 from backend.api.schemas import (
     CompareOut,
     ForecastGenerateIn,
@@ -52,7 +52,7 @@ from sqlalchemy import text
 
 router = APIRouter(prefix="/forecast", tags=["forecast"])
 
-Auth = Annotated[str, Depends(require_auth)]
+_Auth = Annotated[Auth, Depends(require_auth)]
 
 # In-memory job store — fine for single-process uvicorn
 _jobs: dict[str, dict[str, Any]] = {}
@@ -342,13 +342,14 @@ def _make_compare_dp_excel(data: dict) -> bytes:
 )
 async def run_generate_forecast(
     body: ForecastGenerateIn,
-    _: Auth,
+    auth: _Auth,
 ) -> dict:
     """
     Submits the forecast job and returns a job_id immediately.
     The actual engine + DB writes run in the background.
     Poll GET /forecast/status/{job_id} every few seconds until status is 'done' or 'error'.
     """
+    check_account_access(body.account_id, auth)
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "running", "result": None, "error": None}
 
@@ -400,7 +401,7 @@ async def run_generate_forecast(
     "/status/{job_id}",
     summary="Poll forecast generation job status",
 )
-async def get_forecast_job_status(job_id: str, _: Auth) -> dict:
+async def get_forecast_job_status(job_id: str, auth: _Auth) -> dict:
     """Returns {status, result, error}. status: 'running' | 'done' | 'error'."""
     job = _jobs.get(job_id)
     if not job:
@@ -415,9 +416,10 @@ async def get_forecast_job_status(job_id: str, _: Auth) -> dict:
 async def export_forecast(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    auth: _Auth,
 ) -> StreamingResponse:
     """Download forecast_periods as Excel: one row per (date, period), one column per zone."""
+    check_account_access(account_id, auth)
     schema = schema_for(account_id)
     async with get_session(schema) as session:
         data = await get_forecast_ea_matrix(session, account_id, mese_anno)
@@ -447,10 +449,11 @@ async def export_forecast(
 async def get_forecast_compare(
     account_id: str,
     pod: str,
-    _: Auth,
+    auth: _Auth,
     from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
 ) -> CompareOut:
+    check_account_access(account_id, auth)
     if from_date > to_date:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail="from_date must be <= to_date")
@@ -467,11 +470,12 @@ async def get_forecast_compare(
 async def export_compare_pod(
     account_id: str,
     pod: str,
-    _: Auth,
+    auth: _Auth,
     from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
 ) -> StreamingResponse:
     """Download current-year vs previous-year daily comparison for a single POD as Excel."""
+    check_account_access(account_id, auth)
     if from_date > to_date:
         raise HTTPException(422, "from_date must be <= to_date")
 
@@ -496,7 +500,7 @@ async def export_compare_pod(
 )
 async def get_compare_dp(
     account_id: str,
-    _: Auth,
+    auth: _Auth,
     from_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
     to_date: date = Query(..., description="End date (YYYY-MM-DD)"),
     anagrafica_mese_anno: str | None = Query(default=None, description="Registry month MM/YYYY for DP mapping"),
@@ -506,6 +510,7 @@ async def get_compare_dp(
     Returns daily MWh by dispatching point for the given date range and the same range
     one year earlier.  POD→DP mapping comes from ANAGRAFICA (defaults to the month of from_date).
     """
+    check_account_access(account_id, auth)
     if from_date > to_date:
         raise HTTPException(422, "from_date must be <= to_date")
 
@@ -524,12 +529,13 @@ async def get_compare_dp(
 )
 async def export_compare_dp(
     account_id: str,
-    _: Auth,
+    auth: _Auth,
     from_date: date = Query(...),
     to_date: date = Query(...),
     anagrafica_mese_anno: str | None = Query(default=None),
     pods: str | None = Query(default=None),
 ) -> StreamingResponse:
+    check_account_access(account_id, auth)
     if from_date > to_date:
         raise HTTPException(422, "from_date must be <= to_date")
 
@@ -564,7 +570,7 @@ async def export_compare_dp(
 async def export_forecast_pods(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    auth: _Auth,
 ) -> StreamingResponse:
     """
     Downloads forecast_periods as Excel wide format:
@@ -572,6 +578,7 @@ async def export_forecast_pods(
     One row per (POD, date). Values are ea_mwh (MWh).
     Filename column contains the source XML file name when available.
     """
+    check_account_access(account_id, auth)
     schema = schema_for(account_id)
     t0 = time.monotonic()
     async with get_session(schema) as session:
@@ -629,8 +636,9 @@ async def export_forecast_pods(
     "/measurements/months",
     summary="List months that have measurement data for an account",
 )
-async def get_measurement_months(account_id: str, _: Auth) -> list[str]:
+async def get_measurement_months(account_id: str, auth: _Auth) -> list[str]:
     """Returns distinct mese_anno values from the measurements table, newest first."""
+    check_account_access(account_id, auth)
     schema = schema_for(account_id)
     async with get_session(schema) as session:
         result = await session.execute(
@@ -652,7 +660,7 @@ async def get_measurement_months(account_id: str, _: Auth) -> list[str]:
 async def export_measurements_wide(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    auth: _Auth,
 ) -> StreamingResponse:
     """
     Downloads actual measured ea_kwh values from the measurements table in wide format:
@@ -661,6 +669,7 @@ async def export_measurements_wide(
     This is the source data the forecast engine uses (tipo_dato E preferred, S as fallback).
     To see what April 2026 forecast is based on, request mese_anno=04/2025.
     """
+    check_account_access(account_id, auth)
     schema = schema_for(account_id)
     t0 = time.monotonic()
     async with get_session(schema) as session:
@@ -706,11 +715,12 @@ async def export_measurements_wide(
 async def get_forecast(
     account_id: str,
     mese_anno: str,
-    _: Auth,
+    auth: _Auth,
     pod: str | None = Query(default=None, description="Filter to a specific POD"),
     limit: int = Query(default=2976, ge=1, le=10000, description="Max rows (default 2976 = 1 POD × 31 days × 96)"),
     offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
 ) -> list[ForecastPeriodOut]:
+    check_account_access(account_id, auth)
     schema = schema_for(account_id)
     async with get_session(schema) as session:
         if pod:

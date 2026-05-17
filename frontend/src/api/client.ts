@@ -2,6 +2,7 @@ import type {
   Account, AnagraficaRecord, CompareDPOut, CompareOut, CorrectionSummary, DailyTotal,
   DispatchingWeight, FileLog, ForecastGenerateResult, ForecastJob, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
+  SystemStatus, User, UserCreate, UserUpdate,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -10,6 +11,21 @@ const TOKEN_KEY = 'sii_token'
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
+}
+
+export function getCurrentUser(): { username: string; is_admin: boolean; allowed_accounts: string[] | null } | null {
+  const token = getToken()
+  if (!token) return null
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return {
+      username: payload.sub ?? '',
+      is_admin: !!payload.is_admin,
+      allowed_accounts: payload.allowed_accounts ?? null,
+    }
+  } catch {
+    return null
+  }
 }
 
 function setToken(token: string): void {
@@ -269,3 +285,14 @@ export const uploadAnagrafica = (account_id: string, file: File) => {
 
 export const deleteAnagrafica = (account_id: string, mese_anno: string) =>
   del(`/admin/anagrafica?account_id=${encodeURIComponent(account_id)}&mese_anno=${encodeURIComponent(mese_anno)}`)
+
+// ── User management ───────────────────────────────────────────────────────────
+
+export const fetchUsers    = () => get<User[]>('/admin/users')
+export const createUser    = (body: UserCreate) => post<User>('/admin/users', body)
+export const updateUser    = (id: number, body: UserUpdate) => put<User>(`/admin/users/${id}`, body)
+export const deleteUser    = (id: number) => del(`/admin/users/${id}`)
+
+// ── System status ─────────────────────────────────────────────────────────────
+
+export const fetchSystemStatus = () => get<SystemStatus>('/admin/system/status')

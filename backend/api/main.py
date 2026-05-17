@@ -39,6 +39,7 @@ from backend.api.routes.forecast import router as forecast_router
 from backend.api.routes.measurements import router as measurements_router
 from backend.api.routes.monitoring import router as monitoring_router
 from backend.api.routes.sync import router as sync_router
+from backend.api.routes.users import router as users_router
 from backend.core.config import settings
 from backend.db.session import get_public_session
 from backend.forecast.loss_calculator import DEFAULT_RULES
@@ -149,6 +150,7 @@ app.include_router(files_router,       prefix=_API)
 app.include_router(sync_router,        prefix=_API)
 app.include_router(monitoring_router,  prefix=_API)
 app.include_router(admin_router,       prefix=_API)
+app.include_router(users_router,       prefix=_API)
 app.include_router(forecast_router,    prefix=_API)
 
 

@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from backend.aggregation.engine import get_corrections_summary, get_missing_periods
-from backend.api.auth import require_auth
+from backend.api.auth import Auth, check_account_access, require_auth
 from backend.api.schemas import CorrectionSummaryOut, MissingPeriodOut
 from backend.db.session import get_session
 from backend.ingestion.ingest import schema_for
@@ -23,8 +23,9 @@ router = APIRouter(prefix="/monitoring", tags=["monitoring"])
 async def missing_readings(
     account: Annotated[str, Query()],
     mese_anno: Annotated[str, Query(description="MM/YYYY")],
-    _: Annotated[str, Depends(require_auth)] = None,
+    auth: Annotated[Auth, Depends(require_auth)] = None,
 ) -> list[MissingPeriodOut]:
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_missing_periods(session, account, mese_anno)
@@ -44,8 +45,9 @@ async def missing_readings(
 async def corrections_summary(
     account: Annotated[str, Query()],
     mese_anno: Annotated[str | None, Query(description="MM/YYYY")] = None,
-    _: Annotated[str, Depends(require_auth)] = None,
+    auth: Annotated[Auth, Depends(require_auth)] = None,
 ) -> list[CorrectionSummaryOut]:
+    check_account_access(account, auth)
     schema = schema_for(account)
     async with get_session(schema) as session:
         rows = await get_corrections_summary(session, account, mese_anno)
