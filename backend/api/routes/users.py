@@ -126,7 +126,7 @@ async def update_user(user_id: int, body: UserUpdate, auth: AdminAuth) -> UserOu
         return UserOut.model_validate(user)
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(user_id: int, auth: AdminAuth) -> None:
     if auth.username != "api-key":  # prevent self-delete for JWT users
         async with get_public_session() as s:
