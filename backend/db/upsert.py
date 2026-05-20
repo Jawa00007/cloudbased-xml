@@ -396,6 +396,50 @@ async def upsert_anagrafica(
 _CHUNK = 5_900
 
 
+async def delete_forecast_month(
+    session: AsyncSession,
+    account_id: str,
+    mese_anno: str,
+) -> None:
+    """Delete all forecast rows for an account+month. Called once before streaming inserts."""
+    await session.execute(
+        text("DELETE FROM forecast_periods WHERE account_id = :acct AND mese_anno = :ma"),
+        {"acct": account_id, "ma": mese_anno},
+    )
+
+
+async def insert_forecast_chunk(
+    session: AsyncSession,
+    rows: list,
+    account_id: str,
+) -> int:
+    """Insert a batch of forecast rows without DELETE (caller manages deletion)."""
+    if not rows:
+        return 0
+    table = ForecastPeriod.__table__
+    values = [
+        {
+            "account_id": account_id,
+            "pod": r.pod,
+            "mese_anno": r.mese_anno,
+            "punto_dispacciamento": r.punto_dispacciamento,
+            "forecast_date": r.forecast_date,
+            "source_date": r.source_date,
+            "periodo": r.periodo,
+            "ea_kwh": r.ea_kwh,
+            "ea_kwh_with_loss": r.ea_kwh_with_loss,
+            "loss_pct": r.loss_pct,
+            "source_type": r.source_type,
+        }
+        for r in rows
+    ]
+    total = 0
+    for i in range(0, len(values), _CHUNK):
+        await session.execute(insert(table).values(values[i : i + _CHUNK]))
+        total += len(values[i : i + _CHUNK])
+    return total
+
+
 async def upsert_forecast_periods(
     session: AsyncSession,
     rows: list,  # list[ForecastRow] from engine — avoid circular import

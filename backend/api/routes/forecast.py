@@ -38,11 +38,12 @@ from backend.api.schemas import (
     ForecastPeriodOut,
 )
 from backend.db.session import get_session
-from backend.db.upsert import upsert_forecast_periods
+from backend.db.upsert import delete_forecast_month, insert_forecast_chunk, upsert_forecast_periods
 from backend.forecast.engine import (
     compare_dispatching_points,
     compare_partial_month,
     generate_forecast,
+    generate_forecast_streaming,
     get_forecast_by_dp,
     get_forecast_ea_matrix,
     get_forecast_periods_by_dp,
@@ -360,11 +361,21 @@ async def run_generate_forecast(
         try:
             async with get_session(schema) as session:
                 t1 = time.monotonic()
-                rows = await generate_forecast(session, body.account_id, body.mese_anno, ana_month)
-                t2 = time.monotonic()
-                logger.info("TIMING generate_forecast: %.1fs, rows=%d", t2 - t1, len(rows))
+                # Delete existing rows once, then stream-insert in chunks to keep
+                # peak RAM bounded (large accounts like CH4 have 10M+ rows total).
+                await delete_forecast_month(session, body.account_id, body.mese_anno)
+                n = 0
+                got_any = False
+                async for chunk in generate_forecast_streaming(
+                    session, body.account_id, body.mese_anno, ana_month
+                ):
+                    got_any = True
+                    n += await insert_forecast_chunk(session, chunk, body.account_id)
 
-                if not rows:
+                t2 = time.monotonic()
+                logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
+
+                if not got_any:
                     _jobs[job_id] = {
                         "status": "error",
                         "result": None,
@@ -374,9 +385,6 @@ async def run_generate_forecast(
                         ),
                     }
                     return
-                n = await upsert_forecast_periods(session, rows, body.account_id)
-                t3 = time.monotonic()
-                logger.info("TIMING upsert_forecast_periods: %.1fs, n=%d", t3 - t2, n)
 
             logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
             _jobs[job_id] = {

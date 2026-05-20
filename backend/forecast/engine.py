@@ -192,6 +192,102 @@ def _source_mese_anno(forecast_mese_anno: str) -> str:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+async def generate_forecast_streaming(
+    session: AsyncSession,
+    account_id: str,
+    forecast_mese_anno: str,
+    anagrafica_mese_anno: str | None = None,
+    pods_per_chunk: int = 50,
+):
+    """
+    Async-generator variant of generate_forecast.
+    Yields list[ForecastRow] in chunks of `pods_per_chunk` PODs so that the
+    caller can upsert incrementally and keep peak RAM bounded regardless of
+    how many PODs the account has.
+    """
+    ana_month    = anagrafica_mese_anno or forecast_mese_anno
+    source_month = _source_mese_anno(forecast_mese_anno)
+    loss_rules   = await _load_loss_rules(session, account_id)
+    ana_pods     = await _load_anagrafica_pods(session, account_id, ana_month)
+
+    log.info(
+        "Forecast(stream) %s target=%s registry=%s source=%s pods=%d",
+        account_id, forecast_mese_anno, ana_month, source_month, len(ana_pods),
+    )
+    if not ana_pods:
+        log.warning("No ANAGRAFICA data for %s / %s", account_id, forecast_mese_anno)
+        return
+
+    seen_pods: set[str] = set()
+    unique_ana: list[dict] = []
+    for a in ana_pods:
+        if a["pod"] not in seen_pods:
+            seen_pods.add(a["pod"])
+            unique_ana.append(a)
+    if len(unique_ana) < len(ana_pods):
+        log.warning("Deduplicated %d duplicate PODs from ANAGRAFICA", len(ana_pods) - len(unique_ana))
+    ana_pods = unique_ana
+
+    pods   = [a["pod"] for a in ana_pods]
+    puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
+
+    pod_meta_map     = await _load_pod_metadata_batch(session, account_id, pods)
+    dispatch_map     = await _load_dispatching_weights_batch(session, account_id, puntos)
+    source_daily_map = await _load_source_daily_batch(session, account_id, pods, source_month)
+
+    chunk: list[ForecastRow] = []
+
+    for ana in ana_pods:
+        pod         = ana["pod"]
+        punto       = ana["punto_dispacciamento"]
+        consumo_tot = ana["consumo_tot"]
+
+        meta           = pod_meta_map.get(pod)
+        tensione       = (meta or {}).get("tensione") or ana.get("tensione")
+        codice_tariffa = (meta or {}).get("codice_tariffa") or ana.get("codice_tariffa")
+        pod_found      = meta is not None
+
+        loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
+
+        weights: list[float] | None = dispatch_map.get(punto) if punto else None
+        if punto and weights is None:
+            log.warning(
+                "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — falling back to uniform distribution. "
+                "Add weights in Admin > Dispatching Weights using exactly this name.",
+                account_id, forecast_mese_anno, pod, punto,
+            )
+        source_daily = source_daily_map.get(pod, {})
+
+        filled: list[FilledPeriod] = build_forecast_month(
+            forecast_mese_anno=forecast_mese_anno,
+            source_daily=source_daily,
+            consumo_tot=consumo_tot,
+            dispatching_weights=weights,
+        )
+
+        for fp in filled:
+            chunk.append(ForecastRow(
+                account_id=account_id,
+                pod=pod,
+                mese_anno=forecast_mese_anno,
+                punto_dispacciamento=punto,
+                forecast_date=fp.forecast_date,
+                source_date=fp.source_date,
+                periodo=fp.periodo,
+                ea_kwh=fp.ea_kwh,
+                ea_kwh_with_loss=apply_loss(fp.ea_kwh, loss_pct),
+                loss_pct=loss_pct,
+                source_type=fp.source_type,
+            ))
+
+        if len(chunk) >= pods_per_chunk * 31 * 96:
+            yield chunk
+            chunk = []
+
+    if chunk:
+        yield chunk
+
+
 async def generate_forecast(
     session: AsyncSession,
     account_id: str,
