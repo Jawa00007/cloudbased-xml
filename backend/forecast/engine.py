@@ -262,6 +262,12 @@ async def generate_forecast(
         loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
 
         weights: list[float] | None = dispatch_map.get(punto) if punto else None
+        if punto and weights is None:
+            log.warning(
+                "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — falling back to uniform distribution. "
+                "Add weights in Admin > Dispatching Weights using exactly this name.",
+                account_id, forecast_mese_anno, pod, punto,
+            )
         source_daily = source_daily_map.get(pod, {})
 
         filled: list[FilledPeriod] = build_forecast_month(
