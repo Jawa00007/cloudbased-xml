@@ -371,6 +371,7 @@ async def run_generate_forecast(
                 ):
                     got_any = True
                     n += await insert_forecast_chunk(session, chunk, body.account_id)
+                    await session.commit()  # keep WAL small — commit each 50-pod chunk
 
                 t2 = time.monotonic()
                 logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
