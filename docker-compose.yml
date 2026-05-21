@@ -39,8 +39,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
-          cpus: "1.0"
+          memory: 4g
+          cpus: "2.0"
 
   nginx:
     image: nginx:alpine
