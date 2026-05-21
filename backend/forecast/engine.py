@@ -283,6 +283,11 @@ async def generate_forecast_streaming(
         if len(chunk) >= pods_per_chunk * 31 * 96:
             yield chunk
             chunk = []
+        else:
+            # Yield to the event loop every POD so the API remains responsive
+            # (build_forecast_month is CPU-bound; without this the loop blocks
+            # health checks and request handlers for the full chunk duration).
+            await asyncio.sleep(0)
 
     if chunk:
         yield chunk
