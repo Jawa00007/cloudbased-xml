@@ -178,6 +178,7 @@ class AnagraficaUploadOut(BaseModel):
     account_id: str
     mese_anno: str
     records_upserted: int
+    forecast_job_id: str | None = None
 
 
 # ── Forecast ───────────────────────────────────────────────────────────────────

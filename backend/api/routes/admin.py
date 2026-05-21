@@ -18,6 +18,7 @@ import asyncio
 
 from backend.api.auth import Auth, require_admin, require_auth
 from backend.db.retention import retention_cutoff, run_monthly_retention
+from backend.api.routes.forecast import start_forecast_job
 from backend.api.schemas import (
     AnagraficaOut,
     AnagraficaUploadOut,
@@ -178,11 +179,13 @@ async def upload_anagrafica(
         n = await upsert_anagrafica(session, records, account_id)
 
     mese_anno = records[0].mese_anno if records else ""
+    job_id = start_forecast_job(account_id, mese_anno) if mese_anno else None
     return AnagraficaUploadOut(
         message="ANAGRAFICA uploaded",
         account_id=account_id,
         mese_anno=mese_anno,
         records_upserted=n,
+        forecast_job_id=job_id,
     )
 
 

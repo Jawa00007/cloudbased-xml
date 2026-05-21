@@ -628,6 +628,30 @@ Fields are NOT flat children of `<DatiPod>`. Actual structure:
   SOF, SOS, VNO, VNO2G, VP2G — some (SMIS, SNF, SOF, S2G) are not in the spec but appear
   in real files and parse correctly as curve or totalizer via shape detection.
 
+## Key Fixes & Architectural Decisions
+
+### Forecast route — session/search_path isolation (`backend/api/routes/forecast.py`)
+
+After `session.commit()`, SQLAlchemy 2.0 releases the connection back to the pool. Pool connections don't inherit `SET search_path TO schema, public` that was issued on the previous checkout. If a single session is used for both reads and chunk writes (with mid-loop commits), INSERT statements after the first commit land on `public.forecast_periods` (which lacks `ea_kwh`) rather than the account schema's table.
+
+Fix: three separate session contexts per forecast job — (1) isolated delete session, (2) long-lived read session kept open for the entire generator with no commits, (3) a fresh write session per chunk so `SET search_path` is re-executed on every insert.
+
+The forecast logic lives in `_run_forecast_job()` (module-level) and is launched via `start_forecast_job(account_id, mese_anno)`, which both the `/generate` endpoint and the ANAGRAFICA upload endpoint call.
+
+### Dispatching weights — global fallback (`backend/forecast/engine.py`)
+
+The old combined `WHERE account_id = :acct OR account_id IS NULL` query was fragile: account-specific rows could suppress global ones depending on sort order. Fix: explicit two-step query — step 1 fetches account-specific weights, step 2 fetches global (`account_id IS NULL`) fallback only for puntos not covered in step 1. Global weights entered in "All accounts" mode now reliably apply to all accounts that don't have account-specific overrides.
+
+### Auto-forecast after ANAGRAFICA upload (`backend/api/routes/admin.py`)
+
+`POST /admin/anagrafica/upload` now automatically calls `start_forecast_job(account_id, mese_anno)` after a successful upsert and returns `forecast_job_id` in the response. The frontend shows the job ID in the upload success message. No separate manual forecast trigger is needed after uploading ANAGRAFICA.
+
+### Sync tab vs admin uploads
+
+The Sync tab (`/sync/status`) tracks XML file ingestion runs (nightly scheduler at 02:00 UTC + manual `POST /sync`). Admin uploads (ANAGRAFICA, loss config, dispatching weights) are configuration operations — they do not appear in the Sync tab. The Sync tab is empty until at least one ingestion sync runs.
+
+---
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.

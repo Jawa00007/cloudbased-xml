@@ -225,8 +225,11 @@ export default function AdminPage() {
     for (let i = 0; i < files.length; i++) {
       try {
         const res = await uploadAnagrafica(accountId, files[i])
+        const forecastNote = res.forecast_job_id
+          ? ` — forecast started (job: ${res.forecast_job_id.slice(0, 8)}…)`
+          : ''
         setFileStatuses(prev => prev.map((s, j) =>
-          j === i ? { ...s, state: 'ok', msg: `${res.records_upserted} records — ${res.mese_anno}` } : s
+          j === i ? { ...s, state: 'ok', msg: `${res.records_upserted} records — ${res.mese_anno}${forecastNote}` } : s
         ))
       } catch (e) {
         setFileStatuses(prev => prev.map((s, j) =>

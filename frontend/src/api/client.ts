@@ -278,7 +278,7 @@ export const fetchAnagrafica = (account_id: string, mese_anno: string) =>
 export const uploadAnagrafica = (account_id: string, file: File) => {
   const form = new FormData()
   form.append('file', file)
-  return postForm<{ message: string; records_upserted: number; mese_anno: string }>(
+  return postForm<{ message: string; records_upserted: number; mese_anno: string; forecast_job_id: string | null }>(
     `/admin/anagrafica/upload?account_id=${encodeURIComponent(account_id)}`, form,
   )
 }

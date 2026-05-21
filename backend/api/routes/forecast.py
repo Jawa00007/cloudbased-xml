@@ -336,6 +336,73 @@ def _make_compare_dp_excel(data: dict) -> bytes:
 
 # ── Routes — fixed paths first (before catch-all) ───────────────────────────
 
+async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_month: str) -> None:
+    schema = schema_for(account_id)
+    t0 = time.monotonic()
+    try:
+        # Delete in its own session so the commit is immediate and isolated.
+        async with get_session(schema) as del_session:
+            await delete_forecast_month(del_session, account_id, mese_anno)
+
+        t1 = time.monotonic()
+        n = 0
+        got_any = False
+        # Read session stays open for the full generator (no mid-stream commits
+        # so the connection is never released back to the pool mid-iteration,
+        # keeping search_path = schema stable for all source-data queries).
+        async with get_session(schema) as read_session:
+            async for chunk in generate_forecast_streaming(
+                read_session, account_id, mese_anno, ana_month
+            ):
+                got_any = True
+                # Fresh write session per chunk — each new get_session() re-runs
+                # SET search_path so inserts always target the right schema,
+                # not whatever public.* the pool might hand back after a commit.
+                async with get_session(schema) as write_session:
+                    n += await insert_forecast_chunk(write_session, chunk, account_id)
+
+            t2 = time.monotonic()
+            logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
+
+            if not got_any:
+                _jobs[job_id] = {
+                    "status": "error",
+                    "result": None,
+                    "error": (
+                        f"No ANAGRAFICA data found for {account_id} / {mese_anno}. "
+                        "Upload an ANAGRAFICA file first via POST /admin/anagrafica/upload"
+                    ),
+                }
+                return
+
+        logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
+        _jobs[job_id] = {
+            "status": "done",
+            "result": {
+                "message": "Forecast generated",
+                "account_id": account_id,
+                "mese_anno": mese_anno,
+                "periods_written": n,
+            },
+            "error": None,
+        }
+    except Exception as exc:
+        logger.exception("Forecast job %s failed", job_id)
+        _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
+
+
+def start_forecast_job(
+    account_id: str,
+    mese_anno: str,
+    ana_mese_anno: str | None = None,
+) -> str:
+    """Create a forecast background job and return its job_id immediately."""
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running", "result": None, "error": None}
+    asyncio.create_task(_run_forecast_job(job_id, account_id, mese_anno, ana_mese_anno or mese_anno))
+    return job_id
+
+
 @router.post(
     "/generate",
     status_code=status.HTTP_202_ACCEPTED,
@@ -351,65 +418,7 @@ async def run_generate_forecast(
     Poll GET /forecast/status/{job_id} every few seconds until status is 'done' or 'error'.
     """
     check_account_access(body.account_id, auth)
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "running", "result": None, "error": None}
-
-    async def _run() -> None:
-        ana_month = body.anagrafica_mese_anno or body.mese_anno
-        schema = schema_for(body.account_id)
-        t0 = time.monotonic()
-        try:
-            # Delete in its own session so the commit is immediate and isolated.
-            async with get_session(schema) as del_session:
-                await delete_forecast_month(del_session, body.account_id, body.mese_anno)
-
-            t1 = time.monotonic()
-            n = 0
-            got_any = False
-            # Read session stays open for the full generator (no mid-stream commits
-            # so the connection is never released back to the pool mid-iteration,
-            # keeping search_path = ch4 stable for all source-data queries).
-            async with get_session(schema) as read_session:
-                async for chunk in generate_forecast_streaming(
-                    read_session, body.account_id, body.mese_anno, ana_month
-                ):
-                    got_any = True
-                    # Fresh write session per chunk — each new get_session() re-runs
-                    # SET search_path so inserts always target ch4.forecast_periods,
-                    # not whatever public.* the pool might hand back after a commit.
-                    async with get_session(schema) as write_session:
-                        n += await insert_forecast_chunk(write_session, chunk, body.account_id)
-
-                t2 = time.monotonic()
-                logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
-
-                if not got_any:
-                    _jobs[job_id] = {
-                        "status": "error",
-                        "result": None,
-                        "error": (
-                            f"No ANAGRAFICA data found for {body.account_id} / {body.mese_anno}. "
-                            "Upload an ANAGRAFICA file first via POST /admin/anagrafica/upload"
-                        ),
-                    }
-                    return
-
-            logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
-            _jobs[job_id] = {
-                "status": "done",
-                "result": {
-                    "message": "Forecast generated",
-                    "account_id": body.account_id,
-                    "mese_anno": body.mese_anno,
-                    "periods_written": n,
-                },
-                "error": None,
-            }
-        except Exception as exc:
-            logger.exception("Forecast job %s failed", job_id)
-            _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
-
-    asyncio.create_task(_run())
+    job_id = start_forecast_job(body.account_id, body.mese_anno, body.anagrafica_mese_anno)
     return {"job_id": job_id, "status": "running"}
 
 
