@@ -14,6 +14,7 @@ import sys
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from backend.db.retention import run_monthly_retention
 from backend.ingestion.ingest import ingest_all
 from backend.ingestion.lock import backfill_active, guard
 
@@ -44,6 +45,11 @@ async def _nightly_ingest() -> None:
         guard.release()
 
 
+async def _monthly_retention() -> None:
+    """Purge measurement data older than 12 months for all active accounts."""
+    await run_monthly_retention()
+
+
 def start_scheduler() -> None:
     """Add the nightly job and start the scheduler. Called on FastAPI startup."""
     scheduler.add_job(
@@ -55,8 +61,17 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,   # allow up to 1 hour late start
         max_instances=1,           # never overlap with a previous run still in progress
     )
+    scheduler.add_job(
+        _monthly_retention,
+        trigger=CronTrigger(day=1, hour=3, minute=0),   # 1st of each month at 03:00 UTC
+        id="monthly_retention",
+        name="Monthly data retention — rolling 12-month window",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        max_instances=1,
+    )
     scheduler.start()
-    logger.info("Scheduler started — nightly job at 02:00")
+    logger.info("Scheduler started — nightly job at 02:00, retention on 1st of month at 03:00")
 
 
 def stop_scheduler() -> None:

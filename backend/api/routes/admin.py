@@ -14,7 +14,10 @@ from pydantic import BaseModel
 from sqlalchemy import delete, text
 from sqlalchemy.dialects.postgresql import insert
 
+import asyncio
+
 from backend.api.auth import Auth, require_admin, require_auth
+from backend.db.retention import retention_cutoff, run_monthly_retention
 from backend.api.schemas import (
     AnagraficaOut,
     AnagraficaUploadOut,
@@ -481,3 +484,42 @@ async def delete_dispatching_config(
                 DELETE FROM dispatching_config
                 WHERE account_id IS NULL AND punto_dispacciamento = :pd
             """), {"pd": punto_dispacciamento})
+
+
+# ── Data retention ────────────────────────────────────────────────────────────
+
+@router.post(
+    "/retention/run",
+    summary="Trigger rolling 12-month data retention purge immediately (admin only)",
+)
+async def trigger_retention(auth: _AdminAuth) -> dict:
+    """
+    Runs the same logic as the monthly scheduler job (1st of each month at 03:00).
+    Returns immediately; purge runs in the background.
+    """
+    asyncio.create_task(run_monthly_retention())
+    return {"status": "started", "cutoff": str(retention_cutoff())}
+
+
+@router.get(
+    "/retention/log",
+    summary="Retention history from archive catalog (admin only)",
+)
+async def get_retention_log(auth: _AdminAuth) -> list[dict]:
+    """Returns the last 200 retention runs ordered by most recent first."""
+    async with get_public_session() as session:
+        rows = (await session.execute(text("""
+            SELECT account_id, cutoff_date, deleted_at, rows_deleted
+            FROM public.archive_catalog
+            ORDER BY deleted_at DESC
+            LIMIT 200
+        """))).fetchall()
+    return [
+        {
+            "account_id": r[0],
+            "cutoff_date": str(r[1]),
+            "deleted_at": r[2].isoformat(),
+            "rows_deleted": r[3],
+        }
+        for r in rows
+    ]

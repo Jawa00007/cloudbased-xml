@@ -58,7 +58,10 @@ def build_forecast_month(
         dispatching_weights: 96 floats summing to 1.0. Uniform if None.
 
     Returns:
-        List of FilledPeriod — always 31 × 96 = 2 976 rows.
+        List of FilledPeriod — days_in_month × 96 rows (e.g. 30×96=2 880 for April).
+        Short months (April/June/September/November = 30 days, February = 28/29)
+        produce fewer rows — non-existent days are skipped entirely to avoid
+        duplicate (forecast_date, periodo) pairs that would violate the DB constraint.
     """
     mm, yyyy = forecast_mese_anno.split("/")
     month = int(mm)
@@ -76,20 +79,20 @@ def build_forecast_month(
     result: list[FilledPeriod] = []
     last_used_source: date | None = None
 
-    for day_num in range(1, 32):  # always 31 slots
-        # Determine the forecast calendar date (may not exist for short months)
+    for day_num in range(1, 32):
+        # Skip days beyond the real month end (e.g. April 31, Feb 29 in non-leap year).
+        # Using the last-day fallback caused duplicate forecast_dates (April 30 appeared
+        # twice for day_num=30 and day_num=31), violating the DB unique constraint.
         try:
             f_date = date(year, month, day_num)
         except ValueError:
-            f_date = None  # day beyond month end → pad with last available
+            continue  # day_num beyond month end — skip rather than reuse last day
 
         # Determine the corresponding source date (same day in previous year)
-        source_date_target: date | None = None
-        if f_date is not None:
-            try:
-                source_date_target = date(year - 1, month, day_num)
-            except ValueError:
-                source_date_target = None
+        try:
+            source_date_target: date | None = date(year - 1, month, day_num)
+        except ValueError:
+            source_date_target = None  # e.g. Feb 29 in non-leap source year
 
         # --- Pick source periods ---
         periods_for_day: list[tuple[int, float | None, str]] | None = None
@@ -101,7 +104,7 @@ def build_forecast_month(
             periods_for_day = source_daily[source_date_target]
             used_source_date = source_date_target
 
-        elif sorted_source_dates and f_date is not None:
+        elif sorted_source_dates:
             # Case 2: carry forward last available day before target
             candidates = [d for d in sorted_source_dates if d <= source_date_target] if source_date_target else sorted_source_dates
             if not candidates:
@@ -111,17 +114,11 @@ def build_forecast_month(
             used_source_date = last_used_source
             source_type_override = "filled"
 
-        elif f_date is None and last_used_source and last_used_source in source_daily:
-            # Padding beyond real month end — repeat last available day
-            periods_for_day = source_daily[last_used_source]
-            used_source_date = last_used_source
-            source_type_override = "padded"
-
         if periods_for_day is not None:
             for (periodo, ea_kwh, base_type) in periods_for_day:
                 stype = source_type_override or base_type
                 result.append(FilledPeriod(
-                    forecast_date=f_date or date(year, month, _last_day(year, month)),
+                    forecast_date=f_date,
                     source_date=used_source_date,
                     periodo=periodo,
                     ea_kwh=float(ea_kwh) if ea_kwh is not None else None,
@@ -134,9 +131,8 @@ def build_forecast_month(
                 ea_kwh: float | None = None
                 if daily_est_kwh is not None and i < len(weights):
                     ea_kwh = daily_est_kwh * weights[i]
-                target_date = f_date or date(year, month, _last_day(year, month))
                 result.append(FilledPeriod(
-                    forecast_date=target_date,
+                    forecast_date=f_date,
                     source_date=None,
                     periodo=periodo,
                     ea_kwh=ea_kwh,

@@ -107,7 +107,9 @@ def run_migrations_online() -> None:
         if schema:
             do_run_migrations(connection, schema)
         else:
-            # Apply to all active schemas in public.accounts
+            # Always run public-schema migrations first (users, archive_catalog, etc.)
+            do_run_migrations(connection, "public")
+            # Then apply to all active account schemas
             rows = connection.execute(
                 text("SELECT schema_name FROM public.accounts WHERE active = true")
             )

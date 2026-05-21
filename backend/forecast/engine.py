@@ -15,6 +15,7 @@ Pipeline per POD:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -96,25 +97,43 @@ async def _load_dispatching_weights_batch(
     puntos: list[str],
 ) -> dict[str, list[float] | None]:
     """
-    Load dispatching weights for all relevant puntos in one query.
-    Account-specific rows take precedence over global (NULL account_id).
-    Returns {punto_dispacciamento: [96 weights] or None}.
+    Load dispatching weights for all relevant puntos.
+    Two-step: account-specific first, then global (account_id IS NULL) for any
+    puntos not covered by account-specific rows.  Global weights therefore work
+    as a shared fallback — enter them once in "All accounts" mode and all
+    accounts will use them automatically unless they have account-specific overrides.
+    Returns {punto_dispacciamento: [96 floats summing to 1.0] or None}.
     """
     if not puntos:
         return {}
-    rows = await session.execute(text("""
+
+    def _collect(rows_iter) -> dict[str, dict[int, float]]:
+        by_punto: dict[str, dict[int, float]] = {}
+        for r in rows_iter:
+            pd, periodo, pct = r[0], r[1], float(r[2])
+            by_punto.setdefault(pd, {})[periodo] = pct
+        return by_punto
+
+    # Step 1 — account-specific weights
+    acct_rows = await session.execute(text("""
         SELECT punto_dispacciamento, periodo, pct
         FROM public.dispatching_config
-        WHERE (account_id = :acct OR account_id IS NULL)
-          AND punto_dispacciamento = ANY(:puntos)
-        ORDER BY account_id NULLS LAST, punto_dispacciamento, periodo
+        WHERE account_id = :acct AND punto_dispacciamento = ANY(:puntos)
+        ORDER BY punto_dispacciamento, periodo
     """), {"acct": account_id, "puntos": puntos})
-    by_punto: dict[str, dict[int, float]] = {}
-    for r in rows.fetchall():
-        pd, periodo, pct = r[0], r[1], float(r[2])
-        by_punto.setdefault(pd, {})
-        if periodo not in by_punto[pd]:  # first-seen wins: account-specific before global
-            by_punto[pd][periodo] = pct
+    by_punto = _collect(acct_rows.fetchall())
+
+    # Step 2 — global fallback for any puntos not covered above
+    missing = [p for p in puntos if p not in by_punto]
+    if missing:
+        global_rows = await session.execute(text("""
+            SELECT punto_dispacciamento, periodo, pct
+            FROM public.dispatching_config
+            WHERE account_id IS NULL AND punto_dispacciamento = ANY(:puntos)
+            ORDER BY punto_dispacciamento, periodo
+        """), {"puntos": missing})
+        by_punto.update(_collect(global_rows.fetchall()))
+
     return {
         pd: ([data.get(i, 0.0) for i in range(1, 97)] if len(data) >= 96 else None)
         for pd, data in by_punto.items()
@@ -192,6 +211,107 @@ def _source_mese_anno(forecast_mese_anno: str) -> str:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+async def generate_forecast_streaming(
+    session: AsyncSession,
+    account_id: str,
+    forecast_mese_anno: str,
+    anagrafica_mese_anno: str | None = None,
+    pods_per_chunk: int = 50,
+):
+    """
+    Async-generator — yields list[ForecastRow] in chunks of `pods_per_chunk` PODs.
+
+    Both the DB data loading AND the output are chunked so peak RAM is bounded
+    to ~50 pods at a time regardless of account size (CH4 has 3,449 PODs).
+    The big cost was _load_source_daily_batch which fetched ALL pods' measurements
+    at once (~500 MB for CH4); now it only fetches 50 pods per iteration.
+    """
+    ana_month    = anagrafica_mese_anno or forecast_mese_anno
+    source_month = _source_mese_anno(forecast_mese_anno)
+    loss_rules   = await _load_loss_rules(session, account_id)
+    ana_pods     = await _load_anagrafica_pods(session, account_id, ana_month)
+
+    log.info(
+        "Forecast(stream) %s target=%s registry=%s source=%s pods=%d",
+        account_id, forecast_mese_anno, ana_month, source_month, len(ana_pods),
+    )
+    if not ana_pods:
+        log.warning("No ANAGRAFICA data for %s / %s", account_id, forecast_mese_anno)
+        return
+
+    seen_pods: set[str] = set()
+    unique_ana: list[dict] = []
+    for a in ana_pods:
+        if a["pod"] not in seen_pods:
+            seen_pods.add(a["pod"])
+            unique_ana.append(a)
+    if len(unique_ana) < len(ana_pods):
+        log.warning("Deduplicated %d duplicate PODs from ANAGRAFICA", len(ana_pods) - len(unique_ana))
+    ana_pods = unique_ana
+
+    # Dispatching weights are small (7 zones × 96 periods) — load once upfront
+    puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
+    dispatch_map = await _load_dispatching_weights_batch(session, account_id, puntos)
+
+    # Process pods in chunks; load pod_meta and source_daily per chunk only
+    # so peak RAM ~ pods_per_chunk × 30 days × 96 periods × ~50 bytes ≈ 7 MB/chunk
+    for chunk_start in range(0, len(ana_pods), pods_per_chunk):
+        chunk_anas = ana_pods[chunk_start : chunk_start + pods_per_chunk]
+        chunk_pods = [a["pod"] for a in chunk_anas]
+
+        pod_meta_map     = await _load_pod_metadata_batch(session, account_id, chunk_pods)
+        source_daily_map = await _load_source_daily_batch(session, account_id, chunk_pods, source_month)
+
+        rows: list[ForecastRow] = []
+        for ana in chunk_anas:
+            pod         = ana["pod"]
+            punto       = ana["punto_dispacciamento"]
+            consumo_tot = ana["consumo_tot"]
+
+            meta           = pod_meta_map.get(pod)
+            tensione       = (meta or {}).get("tensione") or ana.get("tensione")
+            codice_tariffa = (meta or {}).get("codice_tariffa") or ana.get("codice_tariffa")
+            pod_found      = meta is not None
+
+            loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
+
+            weights: list[float] | None = dispatch_map.get(punto) if punto else None
+            if punto and weights is None:
+                log.warning(
+                    "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — "
+                    "falling back to uniform distribution. "
+                    "Add weights in Admin > Dispatching Weights using exactly this name.",
+                    account_id, forecast_mese_anno, pod, punto,
+                )
+            source_daily = source_daily_map.get(pod, {})
+
+            filled: list[FilledPeriod] = build_forecast_month(
+                forecast_mese_anno=forecast_mese_anno,
+                source_daily=source_daily,
+                consumo_tot=consumo_tot,
+                dispatching_weights=weights,
+            )
+
+            for fp in filled:
+                rows.append(ForecastRow(
+                    account_id=account_id,
+                    pod=pod,
+                    mese_anno=forecast_mese_anno,
+                    punto_dispacciamento=punto,
+                    forecast_date=fp.forecast_date,
+                    source_date=fp.source_date,
+                    periodo=fp.periodo,
+                    ea_kwh=fp.ea_kwh,
+                    ea_kwh_with_loss=apply_loss(fp.ea_kwh, loss_pct),
+                    loss_pct=loss_pct,
+                    source_type=fp.source_type,
+                ))
+
+        yield rows
+        # Yield to the event loop between chunks so health checks stay responsive
+        await asyncio.sleep(0)
+
+
 async def generate_forecast(
     session: AsyncSession,
     account_id: str,
@@ -262,6 +382,12 @@ async def generate_forecast(
         loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
 
         weights: list[float] | None = dispatch_map.get(punto) if punto else None
+        if punto and weights is None:
+            log.warning(
+                "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — falling back to uniform distribution. "
+                "Add weights in Admin > Dispatching Weights using exactly this name.",
+                account_id, forecast_mese_anno, pod, punto,
+            )
         source_daily = source_daily_map.get(pod, {})
 
         filled: list[FilledPeriod] = build_forecast_month(
