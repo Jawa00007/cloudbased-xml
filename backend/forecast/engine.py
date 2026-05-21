@@ -97,25 +97,43 @@ async def _load_dispatching_weights_batch(
     puntos: list[str],
 ) -> dict[str, list[float] | None]:
     """
-    Load dispatching weights for all relevant puntos in one query.
-    Account-specific rows take precedence over global (NULL account_id).
-    Returns {punto_dispacciamento: [96 weights] or None}.
+    Load dispatching weights for all relevant puntos.
+    Two-step: account-specific first, then global (account_id IS NULL) for any
+    puntos not covered by account-specific rows.  Global weights therefore work
+    as a shared fallback — enter them once in "All accounts" mode and all
+    accounts will use them automatically unless they have account-specific overrides.
+    Returns {punto_dispacciamento: [96 floats summing to 1.0] or None}.
     """
     if not puntos:
         return {}
-    rows = await session.execute(text("""
+
+    def _collect(rows_iter) -> dict[str, dict[int, float]]:
+        by_punto: dict[str, dict[int, float]] = {}
+        for r in rows_iter:
+            pd, periodo, pct = r[0], r[1], float(r[2])
+            by_punto.setdefault(pd, {})[periodo] = pct
+        return by_punto
+
+    # Step 1 — account-specific weights
+    acct_rows = await session.execute(text("""
         SELECT punto_dispacciamento, periodo, pct
         FROM public.dispatching_config
-        WHERE (account_id = :acct OR account_id IS NULL)
-          AND punto_dispacciamento = ANY(:puntos)
-        ORDER BY account_id NULLS LAST, punto_dispacciamento, periodo
+        WHERE account_id = :acct AND punto_dispacciamento = ANY(:puntos)
+        ORDER BY punto_dispacciamento, periodo
     """), {"acct": account_id, "puntos": puntos})
-    by_punto: dict[str, dict[int, float]] = {}
-    for r in rows.fetchall():
-        pd, periodo, pct = r[0], r[1], float(r[2])
-        by_punto.setdefault(pd, {})
-        if periodo not in by_punto[pd]:  # first-seen wins: account-specific before global
-            by_punto[pd][periodo] = pct
+    by_punto = _collect(acct_rows.fetchall())
+
+    # Step 2 — global fallback for any puntos not covered above
+    missing = [p for p in puntos if p not in by_punto]
+    if missing:
+        global_rows = await session.execute(text("""
+            SELECT punto_dispacciamento, periodo, pct
+            FROM public.dispatching_config
+            WHERE account_id IS NULL AND punto_dispacciamento = ANY(:puntos)
+            ORDER BY punto_dispacciamento, periodo
+        """), {"puntos": missing})
+        by_punto.update(_collect(global_rows.fetchall()))
+
     return {
         pd: ([data.get(i, 0.0) for i in range(1, 97)] if len(data) >= 96 else None)
         for pd, data in by_punto.items()
