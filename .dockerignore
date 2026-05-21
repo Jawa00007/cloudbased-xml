@@ -11,3 +11,16 @@ __pycache__/
 .git/
 .pytest_cache/
 *.egg-info/
+venv/
+.venv/
+env/
+*.log
+logs/
+node_modules/
+server_scripts/
+*.tar
+*.tar.gz
+*.zip
+*.sql
+*.dump
+regen_forecast*.py
