@@ -359,19 +359,26 @@ async def run_generate_forecast(
         schema = schema_for(body.account_id)
         t0 = time.monotonic()
         try:
-            async with get_session(schema) as session:
-                t1 = time.monotonic()
-                # Delete existing rows once, then stream-insert in chunks to keep
-                # peak RAM bounded (large accounts like CH4 have 10M+ rows total).
-                await delete_forecast_month(session, body.account_id, body.mese_anno)
-                n = 0
-                got_any = False
+            # Delete in its own session so the commit is immediate and isolated.
+            async with get_session(schema) as del_session:
+                await delete_forecast_month(del_session, body.account_id, body.mese_anno)
+
+            t1 = time.monotonic()
+            n = 0
+            got_any = False
+            # Read session stays open for the full generator (no mid-stream commits
+            # so the connection is never released back to the pool mid-iteration,
+            # keeping search_path = ch4 stable for all source-data queries).
+            async with get_session(schema) as read_session:
                 async for chunk in generate_forecast_streaming(
-                    session, body.account_id, body.mese_anno, ana_month
+                    read_session, body.account_id, body.mese_anno, ana_month
                 ):
                     got_any = True
-                    n += await insert_forecast_chunk(session, chunk, body.account_id)
-                    await session.commit()  # keep WAL small — commit each 50-pod chunk
+                    # Fresh write session per chunk — each new get_session() re-runs
+                    # SET search_path so inserts always target ch4.forecast_periods,
+                    # not whatever public.* the pool might hand back after a commit.
+                    async with get_session(schema) as write_session:
+                        n += await insert_forecast_chunk(write_session, chunk, body.account_id)
 
                 t2 = time.monotonic()
                 logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
