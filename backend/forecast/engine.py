@@ -15,6 +15,7 @@ Pipeline per POD:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date
@@ -200,10 +201,12 @@ async def generate_forecast_streaming(
     pods_per_chunk: int = 50,
 ):
     """
-    Async-generator variant of generate_forecast.
-    Yields list[ForecastRow] in chunks of `pods_per_chunk` PODs so that the
-    caller can upsert incrementally and keep peak RAM bounded regardless of
-    how many PODs the account has.
+    Async-generator — yields list[ForecastRow] in chunks of `pods_per_chunk` PODs.
+
+    Both the DB data loading AND the output are chunked so peak RAM is bounded
+    to ~50 pods at a time regardless of account size (CH4 has 3,449 PODs).
+    The big cost was _load_source_daily_batch which fetched ALL pods' measurements
+    at once (~500 MB for CH4); now it only fetches 50 pods per iteration.
     """
     ana_month    = anagrafica_mese_anno or forecast_mese_anno
     source_month = _source_mese_anno(forecast_mese_anno)
@@ -228,69 +231,67 @@ async def generate_forecast_streaming(
         log.warning("Deduplicated %d duplicate PODs from ANAGRAFICA", len(ana_pods) - len(unique_ana))
     ana_pods = unique_ana
 
-    pods   = [a["pod"] for a in ana_pods]
+    # Dispatching weights are small (7 zones × 96 periods) — load once upfront
     puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
+    dispatch_map = await _load_dispatching_weights_batch(session, account_id, puntos)
 
-    pod_meta_map     = await _load_pod_metadata_batch(session, account_id, pods)
-    dispatch_map     = await _load_dispatching_weights_batch(session, account_id, puntos)
-    source_daily_map = await _load_source_daily_batch(session, account_id, pods, source_month)
+    # Process pods in chunks; load pod_meta and source_daily per chunk only
+    # so peak RAM ~ pods_per_chunk × 30 days × 96 periods × ~50 bytes ≈ 7 MB/chunk
+    for chunk_start in range(0, len(ana_pods), pods_per_chunk):
+        chunk_anas = ana_pods[chunk_start : chunk_start + pods_per_chunk]
+        chunk_pods = [a["pod"] for a in chunk_anas]
 
-    chunk: list[ForecastRow] = []
+        pod_meta_map     = await _load_pod_metadata_batch(session, account_id, chunk_pods)
+        source_daily_map = await _load_source_daily_batch(session, account_id, chunk_pods, source_month)
 
-    for ana in ana_pods:
-        pod         = ana["pod"]
-        punto       = ana["punto_dispacciamento"]
-        consumo_tot = ana["consumo_tot"]
+        rows: list[ForecastRow] = []
+        for ana in chunk_anas:
+            pod         = ana["pod"]
+            punto       = ana["punto_dispacciamento"]
+            consumo_tot = ana["consumo_tot"]
 
-        meta           = pod_meta_map.get(pod)
-        tensione       = (meta or {}).get("tensione") or ana.get("tensione")
-        codice_tariffa = (meta or {}).get("codice_tariffa") or ana.get("codice_tariffa")
-        pod_found      = meta is not None
+            meta           = pod_meta_map.get(pod)
+            tensione       = (meta or {}).get("tensione") or ana.get("tensione")
+            codice_tariffa = (meta or {}).get("codice_tariffa") or ana.get("codice_tariffa")
+            pod_found      = meta is not None
 
-        loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
+            loss_pct = calculate_loss_pct(tensione, codice_tariffa, pod_found, loss_rules)
 
-        weights: list[float] | None = dispatch_map.get(punto) if punto else None
-        if punto and weights is None:
-            log.warning(
-                "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — falling back to uniform distribution. "
-                "Add weights in Admin > Dispatching Weights using exactly this name.",
-                account_id, forecast_mese_anno, pod, punto,
+            weights: list[float] | None = dispatch_map.get(punto) if punto else None
+            if punto and weights is None:
+                log.warning(
+                    "Forecast %s %s pod=%s: no dispatching weights for punto='%s' — "
+                    "falling back to uniform distribution. "
+                    "Add weights in Admin > Dispatching Weights using exactly this name.",
+                    account_id, forecast_mese_anno, pod, punto,
+                )
+            source_daily = source_daily_map.get(pod, {})
+
+            filled: list[FilledPeriod] = build_forecast_month(
+                forecast_mese_anno=forecast_mese_anno,
+                source_daily=source_daily,
+                consumo_tot=consumo_tot,
+                dispatching_weights=weights,
             )
-        source_daily = source_daily_map.get(pod, {})
 
-        filled: list[FilledPeriod] = build_forecast_month(
-            forecast_mese_anno=forecast_mese_anno,
-            source_daily=source_daily,
-            consumo_tot=consumo_tot,
-            dispatching_weights=weights,
-        )
+            for fp in filled:
+                rows.append(ForecastRow(
+                    account_id=account_id,
+                    pod=pod,
+                    mese_anno=forecast_mese_anno,
+                    punto_dispacciamento=punto,
+                    forecast_date=fp.forecast_date,
+                    source_date=fp.source_date,
+                    periodo=fp.periodo,
+                    ea_kwh=fp.ea_kwh,
+                    ea_kwh_with_loss=apply_loss(fp.ea_kwh, loss_pct),
+                    loss_pct=loss_pct,
+                    source_type=fp.source_type,
+                ))
 
-        for fp in filled:
-            chunk.append(ForecastRow(
-                account_id=account_id,
-                pod=pod,
-                mese_anno=forecast_mese_anno,
-                punto_dispacciamento=punto,
-                forecast_date=fp.forecast_date,
-                source_date=fp.source_date,
-                periodo=fp.periodo,
-                ea_kwh=fp.ea_kwh,
-                ea_kwh_with_loss=apply_loss(fp.ea_kwh, loss_pct),
-                loss_pct=loss_pct,
-                source_type=fp.source_type,
-            ))
-
-        if len(chunk) >= pods_per_chunk * 31 * 96:
-            yield chunk
-            chunk = []
-        else:
-            # Yield to the event loop every POD so the API remains responsive
-            # (build_forecast_month is CPU-bound; without this the loop blocks
-            # health checks and request handlers for the full chunk duration).
-            await asyncio.sleep(0)
-
-    if chunk:
-        yield chunk
+        yield rows
+        # Yield to the event loop between chunks so health checks stay responsive
+        await asyncio.sleep(0)
 
 
 async def generate_forecast(
