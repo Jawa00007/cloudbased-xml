@@ -344,7 +344,9 @@ async def sync_status(
         mem_finished = prev.finished_at
         best_finished: datetime | None
         if db_finished and mem_finished:
-            best_finished = max(db_finished, mem_finished)
+            db_utc = db_finished if db_finished.tzinfo else db_finished.replace(tzinfo=timezone.utc)
+            mem_utc = mem_finished if mem_finished.tzinfo else mem_finished.replace(tzinfo=timezone.utc)
+            best_finished = max(db_utc, mem_utc)
         else:
             best_finished = db_finished or mem_finished
 
