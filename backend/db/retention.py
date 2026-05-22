@@ -116,7 +116,7 @@ async def log_retention(
         text("""
             INSERT INTO public.archive_catalog
                 (account_id, cutoff_date, deleted_at, rows_deleted)
-            VALUES (:acct, :cutoff, now(), :rows::jsonb)
+            VALUES (:acct, :cutoff, now(), cast(:rows AS jsonb))
             ON CONFLICT (account_id, cutoff_date) DO UPDATE
                 SET deleted_at   = now(),
                     rows_deleted = EXCLUDED.rows_deleted
