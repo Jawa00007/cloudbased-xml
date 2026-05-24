@@ -117,7 +117,7 @@ async def _refresh_db_last_syncs() -> None:
     global _db_last_sync, _db_file_counts, _db_last_sync_ts
     from sqlalchemy import text
 
-    now = time.monotonic()
+    now = _time.monotonic()
     if now - _db_last_sync_ts < _DB_CACHE_TTL:
         return
     syncs: dict[str, datetime | None] = {}
@@ -141,7 +141,7 @@ async def _refresh_db_last_syncs() -> None:
             counts[acc] = (0, 0)
     _db_last_sync = syncs
     _db_file_counts = counts
-    _db_last_sync_ts = time.monotonic()
+    _db_last_sync_ts = _time.monotonic()
 
 
 def _make_status(account_id: str) -> SyncStatusOut:
@@ -489,7 +489,7 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
                 months_missing=[m for m in expected if m not in present],
             ))
         except Exception as exc:
-            log.error("Coverage query failed for %s: %s", account_id, exc)
+            logger.error("Coverage query failed for %s: %s", account_id, exc)
             results.append(AccountCoverageOut(
                 account_id=account_id,
                 min_date=None, max_date=None, row_count_est=0,
