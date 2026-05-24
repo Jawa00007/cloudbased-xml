@@ -25,7 +25,7 @@ const DP_COLORS = ['#2563eb', '#16a34a', '#dc2626', '#d97706', '#7c3aed', '#0891
 function monthOptions() {
   const opts: { label: string; value: string }[] = []
   const now = new Date()
-  for (let i = 0; i < 24; i++) {
+  for (let i = -2; i < 24; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
     const mm = String(d.getMonth() + 1).padStart(2, '0')
     opts.push({ label: `${mm}/${d.getFullYear()}`, value: `${mm}/${d.getFullYear()}` })
