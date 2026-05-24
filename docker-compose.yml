@@ -7,7 +7,7 @@ services:
       POSTGRES_USER:     ${POSTGRES_USER:-sii}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - /mnt/volume_fra1_quanta/pgdata:/var/lib/postgresql/data
     networks:
       internal:
         ipv4_address: 172.20.0.10
@@ -88,5 +88,4 @@ networks:
         - subnet: 172.20.0.0/24
 
 volumes:
-  pgdata:
   certbot_webroot:
