@@ -461,15 +461,17 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
     for account_id, schema_name in accounts:
         try:
             async with get_session(schema_name) as session:
-                # 30-second timeout per schema — tight enough to prevent runaway queries,
-                # wide enough for DISTINCT on large files tables
-                await session.execute(text("SET LOCAL statement_timeout TO 30000"))
+                await session.execute(text("SET LOCAL statement_timeout TO 15000"))
 
-                # MIN/MAX via index scan — fast even for 70M-row tables
-                range_row = (await session.execute(text(
-                    "SELECT to_char(MIN(data_misura), 'YYYY-MM-DD'), "
-                    "       to_char(MAX(data_misura), 'YYYY-MM-DD') "
-                    f"FROM {schema_name}.measurements WHERE account_id = :acct"
+                # Single files-table query: date range + present months.
+                # files has O(thousands) rows vs measurements O(millions) — orders of magnitude faster.
+                files_row = (await session.execute(text(
+                    "SELECT "
+                    "  to_char(MIN(to_date(mese_anno,'MM/YYYY')),'YYYY-MM-DD'), "
+                    "  to_char(MAX(to_date(mese_anno,'MM/YYYY')),'YYYY-MM-DD'), "
+                    f"  array_agg(DISTINCT mese_anno ORDER BY mese_anno) "
+                    f"FROM {schema_name}.files "
+                    "WHERE account_id = :acct AND status = 'ok' AND mese_anno IS NOT NULL"
                 ), {"acct": account_id})).one()
 
                 # Row count from stats catalog — no scan, near-instant
@@ -478,17 +480,11 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
                     "WHERE schemaname = :sch AND relname = 'measurements'"
                 ), {"sch": schema_name})).one_or_none()
 
-                # Which months have at least one successfully processed file
-                months_rows = (await session.execute(text(
-                    f"SELECT DISTINCT mese_anno FROM {schema_name}.files "
-                    "WHERE account_id = :acct AND status = 'ok' AND mese_anno IS NOT NULL"
-                ), {"acct": account_id})).scalars().all()
-
-            present = set(months_rows)
+            present = set(files_row[2] or [])
             results.append(AccountCoverageOut(
                 account_id=account_id,
-                min_date=range_row[0],
-                max_date=range_row[1],
+                min_date=files_row[0],
+                max_date=files_row[1],
                 row_count_est=int(stat_row[0]) if stat_row else 0,
                 months_present=sorted(present),
                 months_missing=[m for m in expected if m not in present],
