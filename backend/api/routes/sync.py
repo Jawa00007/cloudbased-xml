@@ -451,6 +451,7 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
 
     expected = _expected_months()
     results: list[AccountCoverageOut] = []
+    had_errors = False
 
     async with get_public_session() as pub:
         accounts = (await pub.execute(
@@ -460,8 +461,9 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
     for account_id, schema_name in accounts:
         try:
             async with get_session(schema_name) as session:
-                # 8-second timeout per schema — avoids blocking during heavy sync writes
-                await session.execute(text("SET LOCAL statement_timeout TO 8000"))
+                # 30-second timeout per schema — tight enough to prevent runaway queries,
+                # wide enough for DISTINCT on large files tables
+                await session.execute(text("SET LOCAL statement_timeout TO 30000"))
 
                 # MIN/MAX via index scan — fast even for 70M-row tables
                 range_row = (await session.execute(text(
@@ -493,12 +495,15 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
             ))
         except Exception as exc:
             logger.warning("Coverage query timed out or failed for %s: %s", account_id, exc)
+            had_errors = True
             results.append(AccountCoverageOut(
                 account_id=account_id,
                 min_date=None, max_date=None, row_count_est=0,
                 months_present=[], months_missing=expected,
             ))
 
-    _coverage_cache["data"] = results
-    _coverage_cache["expires"] = now + _COVERAGE_TTL
+    # Only cache when every account succeeded — don't freeze stale "no data" for 5 min
+    if not had_errors:
+        _coverage_cache["data"] = results
+        _coverage_cache["expires"] = now + _COVERAGE_TTL
     return results
