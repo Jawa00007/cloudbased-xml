@@ -70,6 +70,15 @@ export interface SyncStatus {
   backfill_accounts_total: number | null
 }
 
+export interface AccountCoverage {
+  account_id: string
+  min_date: string | null
+  max_date: string | null
+  row_count_est: number
+  months_present: string[]
+  months_missing: string[]
+}
+
 export interface MissingPeriod {
   pod: string
   data_misura: string

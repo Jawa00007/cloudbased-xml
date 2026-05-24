@@ -24,8 +24,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from datetime import datetime, timezone
+import time as _time
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -44,7 +44,7 @@ def _read_backfill_status() -> dict:
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from backend.api.auth import require_auth
-from backend.api.schemas import SyncStatusOut, SyncTriggerOut
+from backend.api.schemas import AccountCoverageOut, SyncStatusOut, SyncTriggerOut
 from backend.core.config import settings
 from backend.db.session import get_session
 from backend.ingestion.ingest import ACCOUNT_SCHEMA_MAP, ingest_account, ingest_all, schema_for
@@ -411,3 +411,91 @@ async def sync_status(
             result.append(SyncStatusOut(**data))
 
     return result
+
+
+# ── Coverage endpoint ──────────────────────────────────────────────────────────
+
+_coverage_cache: dict = {"data": None, "expires": 0.0}
+_COVERAGE_TTL = 300  # 5 minutes
+
+
+def _expected_months() -> list[str]:
+    """MM/YYYY strings from retention keep_start through the current month."""
+    from backend.db.retention import retention_policy
+    _, keep_start, _ = retention_policy()
+    today = date.today()
+    months: list[str] = []
+    d = keep_start
+    while d <= date(today.year, today.month, 1):
+        months.append(f"{d.month:02d}/{d.year}")
+        if d.month == 12:
+            d = date(d.year + 1, 1, 1)
+        else:
+            d = date(d.year, d.month + 1, 1)
+    return months
+
+
+@router.get("/coverage", response_model=list[AccountCoverageOut])
+async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list[AccountCoverageOut]:
+    """Per-account data coverage: date range, estimated row count, missing months.
+
+    Result is cached for 5 minutes — coverage changes slowly and the query
+    touches all 12 schemas.
+    """
+    from backend.db.session import get_public_session
+    from sqlalchemy import text
+
+    now = _time.time()
+    if _coverage_cache["data"] is not None and now < _coverage_cache["expires"]:
+        return _coverage_cache["data"]
+
+    expected = _expected_months()
+    results: list[AccountCoverageOut] = []
+
+    async with get_public_session() as pub:
+        accounts = (await pub.execute(
+            text("SELECT account_id, schema_name FROM public.accounts WHERE active = true ORDER BY account_id")
+        )).fetchall()
+
+    for account_id, schema_name in accounts:
+        try:
+            async with get_session(schema_name) as session:
+                # MIN/MAX via index scan — fast even for 70M-row tables
+                range_row = (await session.execute(text(
+                    "SELECT to_char(MIN(data_misura), 'YYYY-MM-DD'), "
+                    "       to_char(MAX(data_misura), 'YYYY-MM-DD') "
+                    f"FROM {schema_name}.measurements WHERE account_id = :acct"
+                ), {"acct": account_id})).one()
+
+                # Row count from stats catalog — no scan, near-instant
+                stat_row = (await session.execute(text(
+                    "SELECT n_live_tup FROM pg_stat_user_tables "
+                    "WHERE schemaname = :sch AND relname = 'measurements'"
+                ), {"sch": schema_name})).one_or_none()
+
+                # Which months have at least one successfully processed file
+                months_rows = (await session.execute(text(
+                    f"SELECT DISTINCT mese_anno FROM {schema_name}.files "
+                    "WHERE account_id = :acct AND status = 'ok' AND mese_anno IS NOT NULL"
+                ), {"acct": account_id})).scalars().all()
+
+            present = set(months_rows)
+            results.append(AccountCoverageOut(
+                account_id=account_id,
+                min_date=range_row[0],
+                max_date=range_row[1],
+                row_count_est=int(stat_row[0]) if stat_row else 0,
+                months_present=sorted(present),
+                months_missing=[m for m in expected if m not in present],
+            ))
+        except Exception as exc:
+            log.error("Coverage query failed for %s: %s", account_id, exc)
+            results.append(AccountCoverageOut(
+                account_id=account_id,
+                min_date=None, max_date=None, row_count_est=0,
+                months_present=[], months_missing=expected,
+            ))
+
+    _coverage_cache["data"] = results
+    _coverage_cache["expires"] = now + _COVERAGE_TTL
+    return results

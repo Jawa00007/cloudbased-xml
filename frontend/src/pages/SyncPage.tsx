@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchAccounts, fetchSyncStatus, triggerSync } from '../api/client'
+import { fetchAccounts, fetchSyncCoverage, fetchSyncStatus, triggerSync } from '../api/client'
 import StatusBadge from '../components/StatusBadge'
 
 function fmtElapsed(secs: number): string {
@@ -30,6 +30,18 @@ function fmtNextRun(iso: string | null): string {
   return new Date(iso).toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'short' })
 }
 
+function fmtRows(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`
+  return String(n)
+}
+
+function coverageSeverity(missing: string[]): 'green' | 'amber' | 'red' {
+  if (missing.length === 0) return 'green'
+  if (missing.length <= 4) return 'amber'
+  return 'red'
+}
+
 export default function SyncPage() {
   const qc = useQueryClient()
   const [selectedAccount, setSelectedAccount] = useState('')
@@ -46,6 +58,20 @@ export default function SyncPage() {
     onSuccess: () => {
       setTimeout(() => qc.invalidateQueries({ queryKey: ['sync-status'] }), 1000)
     },
+  })
+
+  const triggerOne = useMutation({
+    mutationFn: (accountId: string) => triggerSync(accountId),
+    onSuccess: () => {
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['sync-status'] }), 1000)
+    },
+  })
+
+  const coverage = useQuery({
+    queryKey: ['sync-coverage'],
+    queryFn: fetchSyncCoverage,
+    refetchInterval: 300_000,
+    staleTime: 240_000,
   })
 
   const statuses = syncStatus.data ?? []
@@ -474,6 +500,105 @@ export default function SyncPage() {
                       </span>
                     </div>
                   ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Data coverage card */}
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Data coverage — per account</p>
+                <p className="text-xs text-slate-400 mt-0.5">Measurement date range, row count, and missing months</p>
+              </div>
+              {coverage.isFetching && (
+                <svg className="w-3.5 h-3.5 text-slate-300 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+              )}
+            </div>
+
+            {coverage.isLoading && (
+              <div className="px-6 py-8 space-y-3">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className="h-3.5 bg-slate-100 rounded animate-pulse" style={{ width: `${50 + i * 10}%` }} />
+                ))}
+              </div>
+            )}
+
+            {coverage.isError && (
+              <div className="px-6 py-6 text-xs text-red-500">
+                Failed to load coverage data. {String(coverage.error)}
+              </div>
+            )}
+
+            {coverage.data && coverage.data.length > 0 && (
+              <>
+                <div className="grid grid-cols-[140px_1fr_70px_1fr_80px] px-6 py-2.5 bg-slate-50 text-[10px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                  <span>Account</span>
+                  <span>Date range</span>
+                  <span>Rows</span>
+                  <span>Missing months</span>
+                  <span></span>
+                </div>
+                <div className="divide-y divide-slate-50">
+                  {coverage.data.map(row => {
+                    const sev = coverageSeverity(row.months_missing)
+                    const chipCls = sev === 'green'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                      : sev === 'amber'
+                      ? 'bg-amber-50 text-amber-700 border-amber-100'
+                      : 'bg-red-50 text-red-700 border-red-100'
+                    return (
+                      <div key={row.account_id} className="grid grid-cols-[140px_1fr_70px_1fr_80px] px-6 py-3 text-xs items-center hover:bg-slate-50/70 transition-colors">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold border w-fit ${chipCls}`}>
+                          {row.account_id}
+                        </span>
+                        <span className="text-slate-500 tabular-nums text-[10px]">
+                          {row.min_date && row.max_date
+                            ? <>{row.min_date} <span className="text-slate-300 mx-0.5">→</span> {row.max_date}</>
+                            : <span className="text-slate-300">no data</span>}
+                        </span>
+                        <span className="text-slate-600 tabular-nums font-semibold text-[11px]">
+                          {row.row_count_est > 0 ? fmtRows(row.row_count_est) : <span className="text-slate-300">—</span>}
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {row.months_missing.length === 0 ? (
+                            <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+                              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                              </svg>
+                              Up to date
+                            </span>
+                          ) : (
+                            row.months_missing.map(m => (
+                              <span key={m} className="text-[9px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 font-medium border border-red-100">
+                                {m}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            onClick={() => triggerOne.mutate(row.account_id)}
+                            disabled={isRunning || triggerOne.isPending}
+                            title={`Sync ${row.account_id}`}
+                            className="text-[10px] px-2.5 py-1 rounded-lg bg-blue-50 text-blue-600 font-semibold hover:bg-blue-100 disabled:opacity-40 transition-colors border border-blue-100"
+                          >
+                            Sync
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-400">
+                    {coverage.data.filter(r => r.months_missing.length === 0).length} of {coverage.data.length} accounts up to date
+                  </span>
+                  <span className="text-[10px] text-slate-300">Refreshes every 5 min</span>
                 </div>
               </>
             )}

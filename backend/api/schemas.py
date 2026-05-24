@@ -156,6 +156,15 @@ class SyncTriggerOut(BaseModel):
     account_id: str | None   # None = all accounts
 
 
+class AccountCoverageOut(BaseModel):
+    account_id: str
+    min_date: str | None        # earliest measurement date, "YYYY-MM-DD"
+    max_date: str | None        # most recent measurement date, "YYYY-MM-DD"
+    row_count_est: int          # n_live_tup from pg_stat_user_tables (fast, approximate)
+    months_present: list[str]   # ["05/2025", "06/2025", ...]
+    months_missing: list[str]   # months in retention window absent from files table
+
+
 # ── ANAGRAFICA ─────────────────────────────────────────────────────────────────
 
 class AnagraficaOut(BaseModel):

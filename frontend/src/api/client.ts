@@ -1,5 +1,5 @@
 import type {
-  Account, AnagraficaRecord, CompareDPOut, CompareOut, CorrectionSummary, DailyTotal,
+  Account, AccountCoverage, AnagraficaRecord, CompareDPOut, CompareOut, CorrectionSummary, DailyTotal,
   DispatchingWeight, FileLog, ForecastGenerateResult, ForecastJob, ForecastPeriod, LossRule,
   MissingPeriod, MonthlyTotal, PeriodRow, PodMetadata, SyncStatus,
   SystemStatus, User, UserCreate, UserUpdate,
@@ -133,8 +133,9 @@ export const fetchPeriodRange = (
 export const fetchFiles      = (account: string, status?: string, limit = 200, offset = 0) =>
   get<FileLog[]>('/files', { account, ...(status ? { status } : {}), limit: String(limit), offset: String(offset) })
 
-export const fetchSyncStatus = () => get<SyncStatus[]>('/sync/status')
-export const triggerSync     = (account?: string) =>
+export const fetchSyncStatus   = () => get<SyncStatus[]>('/sync/status')
+export const fetchSyncCoverage = () => get<AccountCoverage[]>('/sync/coverage')
+export const triggerSync       = (account?: string) =>
   post<{ message: string }>(account ? `/sync/${account}` : '/sync')
 
 export const fetchMissingPeriods  = (account: string, mese_anno: string) =>
