@@ -435,7 +435,7 @@ def _expected_months() -> list[str]:
     return months
 
 
-@router.get("/coverage", response_model=list[AccountCoverageOut])
+@router.get("/sync/coverage", response_model=list[AccountCoverageOut])
 async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list[AccountCoverageOut]:
     """Per-account data coverage: date range, estimated row count, missing months.
 
