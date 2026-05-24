@@ -460,6 +460,9 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
     for account_id, schema_name in accounts:
         try:
             async with get_session(schema_name) as session:
+                # 8-second timeout per schema — avoids blocking during heavy sync writes
+                await session.execute(text("SET LOCAL statement_timeout TO 8000"))
+
                 # MIN/MAX via index scan — fast even for 70M-row tables
                 range_row = (await session.execute(text(
                     "SELECT to_char(MIN(data_misura), 'YYYY-MM-DD'), "
@@ -489,7 +492,7 @@ async def get_sync_coverage(auth: Annotated[str, Depends(require_auth)]) -> list
                 months_missing=[m for m in expected if m not in present],
             ))
         except Exception as exc:
-            logger.error("Coverage query failed for %s: %s", account_id, exc)
+            logger.warning("Coverage query timed out or failed for %s: %s", account_id, exc)
             results.append(AccountCoverageOut(
                 account_id=account_id,
                 min_date=None, max_date=None, row_count_est=0,
