@@ -30,6 +30,7 @@ services:
       - "8000"
     volumes:
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       internal:
         ipv4_address: 172.20.0.11
