@@ -114,21 +114,6 @@ async def delete_stale_data(
     )
     deleted["measurements_totalizer"] = result.rowcount
 
-    # Files log — no data_misura; parse mese_anno (sequential scan is fine — much smaller)
-    result = await session.execute(
-        text("""
-            DELETE FROM files
-            WHERE account_id = :acct
-              AND mese_anno IS NOT NULL
-              AND (to_date(mese_anno, 'MM/YYYY') < :keep_start
-                   OR (to_date(mese_anno, 'MM/YYYY') >= :keep_end
-                       AND to_date(mese_anno, 'MM/YYYY') < :hard_cutoff))
-        """),
-        {"acct": account_id, "keep_start": keep_start,
-         "keep_end": keep_end, "hard_cutoff": hard_cutoff},
-    )
-    deleted["files"] = result.rowcount
-
     # Corrections audit log
     result = await session.execute(
         text("""

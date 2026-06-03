@@ -416,7 +416,7 @@ async def sync_status(
 # ── Coverage endpoint ──────────────────────────────────────────────────────────
 
 _coverage_cache: dict = {"data": None, "expires": 0.0}
-_COVERAGE_TTL = 300  # 5 minutes
+_COVERAGE_TTL = 60  # 1 minute — shorter during active backfill operations
 
 
 def _expected_months() -> list[str]:

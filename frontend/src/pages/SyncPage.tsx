@@ -56,22 +56,28 @@ export default function SyncPage() {
   const trigger = useMutation({
     mutationFn: () => triggerSync(selectedAccount || undefined),
     onSuccess: () => {
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['sync-status'] }), 1000)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['sync-status'] })
+        qc.invalidateQueries({ queryKey: ['sync-coverage'] })
+      }, 1000)
     },
   })
 
   const triggerOne = useMutation({
     mutationFn: (accountId: string) => triggerSync(accountId),
     onSuccess: () => {
-      setTimeout(() => qc.invalidateQueries({ queryKey: ['sync-status'] }), 1000)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['sync-status'] })
+        qc.invalidateQueries({ queryKey: ['sync-coverage'] })
+      }, 1000)
     },
   })
 
   const coverage = useQuery({
     queryKey: ['sync-coverage'],
     queryFn: fetchSyncCoverage,
-    refetchInterval: 300_000,
-    staleTime: 240_000,
+    refetchInterval: 60_000,
+    staleTime: 50_000,
   })
 
   const statuses = syncStatus.data ?? []
