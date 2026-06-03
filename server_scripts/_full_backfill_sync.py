@@ -86,13 +86,27 @@ def get_db_processed(ssh, schema):
 
 def write_remote_file(ssh, remote_path, content: str):
     """Write content to a remote file via stdin of cat — avoids SFTP connection drops."""
-    transport = ssh.get_transport()
-    channel = transport.open_session()
-    channel.exec_command(f"cat > {remote_path}")
-    channel.sendall(content.encode("utf-8"))
-    channel.shutdown_write()
-    channel.recv_exit_status()
-    channel.close()
+    for attempt in range(3):
+        try:
+            transport = ssh.get_transport()
+            channel = transport.open_session()
+            channel.exec_command(f"cat > {remote_path}")
+            channel.sendall(content.encode("utf-8"))
+            channel.shutdown_write()
+            channel.recv_exit_status()
+            channel.close()
+            return
+        except (EOFError, paramiko.ssh_exception.SSHException, OSError) as ex:
+            if attempt == 2:
+                raise
+            print(f"  write_remote_file attempt {attempt + 1} failed ({ex}), reconnecting...")
+            time.sleep(5)
+            try:
+                ssh._transport = None
+                ssh.connect(HOST, username=USER, password=PW, timeout=15)
+                ssh.get_transport().set_keepalive(30)
+            except Exception:
+                pass
 
 
 def rsync_chunk(ssh, account, rel_paths):
@@ -204,6 +218,13 @@ def main():
             chunk_names = unprocessed_names[:CHUNK_SIZE]
             chunk_paths = [remote_by_name[n] for n in chunk_names]
             print(f"  Round {round_num}: {remaining:,} unprocessed → rsyncing {len(chunk_paths):,} files")
+
+            # Reconnect before rsync — file listing takes ~5 min and drops the connection
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            ssh = connect()
 
             rsync_chunk(ssh, account, chunk_paths)
 
