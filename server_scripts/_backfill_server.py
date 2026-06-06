@@ -61,10 +61,15 @@ for round_num in range(1, MAX_ROUNDS + 1):
     try:
         with open(SYNC_LOG) as f:
             lines = [l.strip() for l in f if l.strip()]
-        last = lines[-1] if lines else ""
-        log("Sync result: %s" % last)
-        m = re.search(r"(\d+) new files", last)
-        new = int(m.group(1)) if m else 0
+        new = 0
+        for line in reversed(lines):
+            m = re.search(r"(\d+) new files", line)
+            if m:
+                new = int(m.group(1))
+                log("Sync result: %s" % line)
+                break
+        else:
+            log("Sync result (no summary line found): %s" % (lines[-1] if lines else ""))
     except Exception as ex:
         log("Could not read sync log: %s" % ex)
         new = 1

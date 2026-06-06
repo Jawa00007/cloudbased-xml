@@ -11,7 +11,7 @@ SSH_KEY="/root/.ssh/italian_server"
 SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ServerAliveInterval=60 -o BatchMode=yes"
 LOCAL_DATA="/opt/sii/data"
 LOGFILE="/var/log/sii-sync.log"
-BATCH_SIZE=${BATCH_SIZE_OVERRIDE:-500}
+BATCH_SIZE=${BATCH_SIZE_OVERRIDE:-10000}
 MIN_FREE_GB=3
 
 ACCOUNTS="BAT CH4 DINAMO EGOGREEN ENERGETICA ENERGIT ENJOY ONDA POWERIT ROYAL SOS TOP"
