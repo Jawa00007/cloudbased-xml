@@ -52,6 +52,9 @@ trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
 TOTAL_NEW=0
 
+DATE_FROM=$(date -d "$(date +%Y-%m-01) -12 months" +%Y%m)
+DATE_TO=$(date +%Y%m)
+
 for ACC in $ACCOUNTS; do
     SCHEMA=$(schema_for $ACC)
 
@@ -65,6 +68,17 @@ for ACC in $ACCOUNTS; do
     fi
     REMOTE_COUNT=$(wc -l < $REMOTE_PATHS)
     [ $REMOTE_COUNT -eq 0 ] && continue
+
+    # Filter to rolling 12-month retention window: AAAAMM (3rd _-field of basename)
+    DATE_FILTERED=$TMPDIR_WORK/${ACC}_filtered.txt
+    awk -F'/' -v from="$DATE_FROM" -v to="$DATE_TO" '{
+        fname = $NF
+        n = split(fname, p, "_")
+        if (n >= 3 && length(p[3]) == 6 && p[3] >= from && p[3] <= to) print $0
+    }' "$REMOTE_PATHS" > "$DATE_FILTERED"
+    REMOTE_PATHS=$DATE_FILTERED
+    REMOTE_COUNT=$(wc -l < "$REMOTE_PATHS")
+    [ "$REMOTE_COUNT" -eq 0 ] && { log "$ACC: no files in date window ($DATE_FROM-$DATE_TO)"; continue; }
 
     # Get processed names from DB
     PROCESSED_LIST=$TMPDIR_WORK/${ACC}_processed.txt

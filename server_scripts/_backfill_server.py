@@ -28,11 +28,12 @@ def log(msg):
         f.write(line + "\n")
 
 
-def write_status(running, round_num, new_files=None):
+def write_status(running, round_num, new_files=None, current_account=None):
     try:
         data = {
             "running": running,
-            "current": ("round %d" % round_num) if running else None,
+            "round": round_num if running else None,
+            "current": current_account,
             "accounts_done": round_num - 1,
             "accounts_total": MAX_ROUNDS,
             "files_total": new_files,
@@ -56,7 +57,21 @@ log("=== Backfill started. Script: %s ===" % SCRIPT)
 for round_num in range(1, MAX_ROUNDS + 1):
     write_status(True, round_num)
     log("=== Round %d ===" % round_num)
-    subprocess.run(["bash", SCRIPT], env=env)
+    open(SYNC_LOG, "a").close()
+    proc = subprocess.Popen(["bash", SCRIPT], env=env)
+    current_acc = None
+    with open(SYNC_LOG, "r", encoding="utf-8", errors="replace") as log_f:
+        log_f.seek(0, 2)
+        while proc.poll() is None:
+            line = log_f.readline()
+            if line.strip():
+                m = re.search(r'\]\s+([A-Z0-9]+):\s+(?:\d+ new files|ingesting)', line)
+                if m and m.group(1) != current_acc:
+                    current_acc = m.group(1)
+                    write_status(True, round_num, current_account=current_acc)
+            else:
+                time.sleep(2)
+    proc.wait()
 
     try:
         with open(SYNC_LOG) as f:
