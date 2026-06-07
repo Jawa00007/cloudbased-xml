@@ -35,7 +35,7 @@ exec >> "$LOGFILE" 2>&1
 
 # Skip if backfill is running
 if [ -f "$LOCAL_DATA/.backfill_status.json" ] && \
-   grep -q '"running":true' "$LOCAL_DATA/.backfill_status.json" 2>/dev/null; then
+   grep -qE '"running":\s*true' "$LOCAL_DATA/.backfill_status.json" 2>/dev/null; then
     log "Backfill running — nightly sync skipped"
     exit 0
 fi
