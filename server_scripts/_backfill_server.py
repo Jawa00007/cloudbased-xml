@@ -34,9 +34,9 @@ def write_status(running, round_num, new_files=None, current_account=None):
             "running": running,
             "round": round_num if running else None,
             "current": current_account,
-            "accounts_done": round_num - 1,
-            "accounts_total": MAX_ROUNDS,
-            "files_total": new_files,
+            "rounds_done": round_num - 1,
+            "max_rounds": MAX_ROUNDS,
+            "files_last_round": new_files,
         }
         with open(STATUS_FILE, "w") as f:
             json.dump(data, f)
