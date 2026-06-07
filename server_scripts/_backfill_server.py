@@ -54,10 +54,13 @@ def clear_status():
 
 log("=== Backfill started. Script: %s ===" % SCRIPT)
 
+last_current_acc = None
 for round_num in range(1, MAX_ROUNDS + 1):
-    write_status(True, round_num)
+    write_status(True, round_num, current_account=last_current_acc)
     log("=== Round %d ===" % round_num)
     open(SYNC_LOG, "a").close()
+    # record byte offset before subprocess starts so we only read new lines
+    sync_log_start = os.path.getsize(SYNC_LOG)
     proc = subprocess.Popen(["bash", SCRIPT], env=env)
     current_acc = None
     with open(SYNC_LOG, "r", encoding="utf-8", errors="replace") as log_f:
@@ -68,14 +71,18 @@ for round_num in range(1, MAX_ROUNDS + 1):
                 m = re.search(r'\]\s+([A-Z0-9]+):\s+(?:\d+ new files|ingesting)', line)
                 if m and m.group(1) != current_acc:
                     current_acc = m.group(1)
+                    last_current_acc = current_acc
                     write_status(True, round_num, current_account=current_acc)
             else:
                 time.sleep(2)
     proc.wait()
 
     try:
-        with open(SYNC_LOG) as f:
-            lines = [l.strip() for l in f if l.strip()]
+        # only search lines written by this round's subprocess
+        with open(SYNC_LOG, "rb") as f:
+            f.seek(sync_log_start)
+            new_bytes = f.read()
+        lines = [l.strip() for l in new_bytes.decode("utf-8", errors="replace").splitlines() if l.strip()]
         new = 0
         for line in reversed(lines):
             m = re.search(r"(\d+) new files", line)
@@ -89,7 +96,7 @@ for round_num in range(1, MAX_ROUNDS + 1):
         log("Could not read sync log: %s" % ex)
         new = 1
 
-    write_status(True, round_num, new)
+    write_status(True, round_num, new, current_account=last_current_acc)
     log("New files this round: %d" % new)
     if new == 0:
         log("All accounts up to date. Backfill complete.")

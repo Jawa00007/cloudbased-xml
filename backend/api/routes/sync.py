@@ -331,10 +331,10 @@ async def sync_status(
     backfill = _read_backfill_status()
     backfill_current = (backfill.get("current") or "").upper()
     backfill_queue = [a.upper() for a in (backfill.get("queue") or [])]
-    backfill_active = bool(backfill_current)
-    backfill_files_total: int | None = backfill.get("files_total")
-    backfill_accounts_done: int | None = backfill.get("accounts_done")
-    backfill_accounts_total: int | None = backfill.get("accounts_total")
+    backfill_active = bool(backfill.get("running"))
+    backfill_files_total: int | None = backfill.get("files_last_round")
+    backfill_accounts_done: int | None = backfill.get("rounds_done")
+    backfill_accounts_total: int | None = backfill.get("max_rounds")
 
     for acc in ACCOUNT_SCHEMA_MAP:
         prev = _sync_state.get(acc, _make_status(acc))

@@ -33,8 +33,9 @@ schema_for() {
 
 exec >> "$LOGFILE" 2>&1
 
-# Skip if backfill is running
-if [ -f "$LOCAL_DATA/.backfill_status.json" ] && \
+# Skip if backfill is running (only applies to cron; backfill itself sets BATCH_SIZE_OVERRIDE)
+if [ -z "$BATCH_SIZE_OVERRIDE" ] && \
+   [ -f "$LOCAL_DATA/.backfill_status.json" ] && \
    grep -qE '"running":\s*true' "$LOCAL_DATA/.backfill_status.json" 2>/dev/null; then
     log "Backfill running — nightly sync skipped"
     exit 0
