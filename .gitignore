@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+!.env.staging.example
+
+# SSH deploy key (generated on server, never committed)
+_deploy_key_private.txt
 
 # Data files — client XML/ZIP files, can be large and sensitive
 data/
@@ -32,6 +36,7 @@ htmlcov/
 # Node / frontend (when built)
 node_modules/
 frontend/dist/
+frontend/dist-staging/
 frontend/.env
 frontend/.env.local
 frontend/.env.*.local
