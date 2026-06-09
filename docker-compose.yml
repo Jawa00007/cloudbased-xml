@@ -48,11 +48,46 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)\" || exit 1"]
+      interval: 20s
+      timeout: 8s
+      retries: 3
+      start_period: 40s
     deploy:
       resources:
         limits:
           memory: 4g
           cpus: "2.0"
+
+  # Hot-standby replica — nginx routes here only when api is unhealthy/down
+  api2:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "8000"
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+    networks:
+      internal:
+        ipv4_address: 172.20.0.20
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)\" || exit 1"]
+      interval: 20s
+      timeout: 8s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g
+          cpus: "1.0"
 
   nginx:
     image: nginx:alpine
