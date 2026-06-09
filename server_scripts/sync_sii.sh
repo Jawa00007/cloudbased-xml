@@ -14,7 +14,12 @@ LOGFILE="/var/log/sii-sync.log"
 BATCH_SIZE=${BATCH_SIZE_OVERRIDE:-10000}
 MIN_FREE_GB=3
 
-ACCOUNTS="BAT CH4 DINAMO EGOGREEN ENERGETICA ENERGIT ENJOY ONDA POWERIT ROYAL SOS TOP"
+# Fetch active accounts from public.accounts table (includes any newly-added accounts)
+# Falls back to hardcoded list if DB is unavailable
+_DB_ACCOUNTS=$(docker exec sii-db-1 psql -U sii -d sii -t -A -c \
+  "SELECT account_id FROM public.accounts WHERE active = true ORDER BY account_id" \
+  2>/dev/null | tr '\n' ' ' | xargs)
+ACCOUNTS=${_DB_ACCOUNTS:-"BAT CH4 DINAMO EGOGREEN ENERGETICA ENERGIT ENJOY ONDA POWERIT ROYAL SOS TOP"}
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 free_gb() { df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}'; }

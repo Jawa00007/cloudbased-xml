@@ -34,7 +34,7 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.core.config import settings
-from backend.db.session import get_session
+from backend.db.session import get_public_session, get_session
 from backend.db.upsert import (
     delete_annullamento,
     log_correction,
@@ -85,8 +85,24 @@ def schema_for(account_id: str) -> str:
     upper = account_id.upper()
     if upper in ACCOUNT_SCHEMA_MAP:
         return ACCOUNT_SCHEMA_MAP[upper]
-    # Fallback: normalise name as-is
+    # Fallback: normalise name as-is (also works for newly-added accounts)
     return account_id.lower().replace(" ", "_").replace(".", "_").replace("à", "a")
+
+
+async def load_db_account_map() -> dict[str, str]:
+    """
+    Query public.accounts for active account_id → schema_name mappings.
+    Returns empty dict on failure (hardcoded ACCOUNT_SCHEMA_MAP remains the fallback).
+    """
+    from sqlalchemy import text as _text
+    try:
+        async with get_public_session() as session:
+            rows = (await session.execute(_text(
+                "SELECT account_id, schema_name FROM public.accounts WHERE active = true"
+            ))).fetchall()
+            return {r[0]: r[1] for r in rows}
+    except Exception:
+        return {}
 
 
 async def _load_processed_names(session) -> set[str]:
@@ -268,6 +284,7 @@ async def ingest_account(
     on_scan_start: Callable[[], None] | None = None,
     on_files_found: Callable[[int], None] | None = None,
     on_file_done: Callable[[], None] | None = None,
+    _db_account_map: dict[str, str] | None = None,
 ) -> tuple[int, int, int]:
     """
     Ingest all new XML files for one account.
@@ -280,7 +297,11 @@ async def ingest_account(
       3. Generator walk — yields entries lazily
       4. Process in chunks of _CHUNK_SIZE with _CONCURRENCY semaphore
     """
-    schema = schema_for(account_id)
+    # Prefer DB schema map (picks up dynamically-added accounts); fall back to hardcoded map
+    if _db_account_map and account_id.upper() in {k.upper() for k in _db_account_map}:
+        schema = next(v for k, v in _db_account_map.items() if k.upper() == account_id.upper())
+    else:
+        schema = schema_for(account_id)
     account_root = (data_root or DATA_ROOT) / account_id
 
     if not account_root.exists():
@@ -373,6 +394,12 @@ async def ingest_all(
     if not root.exists():
         logger.warning("SII_DATA_PATH %r does not exist — skipping ingestion", str(root))
         return
+
+    # Load DB account map once — picks up dynamically-added accounts
+    db_map = await load_db_account_map()
+    if db_map:
+        logger.info("Loaded %d accounts from DB account registry", len(db_map))
+
     for account_dir in sorted(root.iterdir()):
         if account_dir.is_dir() and not account_dir.name.startswith("#"):
             acc_name = account_dir.name
@@ -387,6 +414,7 @@ async def ingest_all(
                         on_scan_start=on_scan_start,
                         on_files_found=on_files_found,
                         on_file_done=on_file_done,
+                        _db_account_map=db_map,
                     ),
                     timeout=_ACCOUNT_TIMEOUT_SECONDS,
                 )

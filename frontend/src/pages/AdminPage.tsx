@@ -8,7 +8,9 @@ import {
   fetchAnagrafica, uploadAnagrafica, deleteAnagrafica,
   fetchDispatchingConfig, setDispatchingWeights, deleteDispatchingConfig,
   fetchUsers, createUser, updateUser, deleteUser, getCurrentUser,
+  createAccount,
 } from '../api/client'
+import type { AccountCreate } from '../api/client'
 import type { LossRule, User, UserCreate, UserUpdate } from '../api/types'
 import { itNum, itKwh } from '../utils/format'
 
@@ -55,7 +57,7 @@ export default function AdminPage() {
   const qc = useQueryClient()
   const currentUser = getCurrentUser()
   const isAdmin = currentUser?.is_admin ?? false
-  const [tab, setTab] = useState<'loss' | 'anagrafica' | 'dispatching' | 'users'>('loss')
+  const [tab, setTab] = useState<'loss' | 'anagrafica' | 'dispatching' | 'users' | 'accounts'>('loss')
   const [accountId, setAccountId] = useState(() => sessionStorage.getItem('admin_account') ?? '')
   const [meseAnno, setMeseAnno] = useState(() => sessionStorage.getItem('admin_mese_anno') ?? '')
   const fileRef = useRef<HTMLInputElement>(null)
@@ -75,6 +77,11 @@ export default function AdminPage() {
   const [fileStatuses, setFileStatuses] = useState<FileStatus[]>([])
   const [uploading, setUploading] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Account creation state
+  const [accountForm, setAccountForm] = useState<AccountCreate>({ account_id: '', display_name: '' })
+  const [accountFormError, setAccountFormError] = useState('')
+  const [accountCreated, setAccountCreated] = useState<string | null>(null)
 
   // User management state
   const [userForm, setUserForm] = useState<UserCreate>({ ...EMPTY_USER })
@@ -209,6 +216,17 @@ export default function AdminPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   })
 
+  const addAccount = useMutation({
+    mutationFn: () => createAccount(accountForm),
+    onSuccess: (acct) => {
+      qc.invalidateQueries({ queryKey: ['accounts'] })
+      setAccountCreated(acct.account_id)
+      setAccountForm({ account_id: '', display_name: '' })
+      setAccountFormError('')
+    },
+    onError: (e: Error) => setAccountFormError(e.message),
+  })
+
   function toggleAccountChip(acct: string) {
     setUserForm(prev => {
       const current = prev.allowed_accounts ?? []
@@ -316,7 +334,7 @@ export default function AdminPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-slate-100 rounded-xl w-fit">
-        {(['loss', 'anagrafica', 'dispatching', ...(isAdmin ? ['users'] : [])] as const).map(t => (
+        {(['loss', 'anagrafica', 'dispatching', ...(isAdmin ? ['users', 'accounts'] : [])] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t as typeof tab)}
@@ -324,7 +342,7 @@ export default function AdminPage() {
               tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t === 'loss' ? 'Loss Config' : t === 'anagrafica' ? 'ANAGRAFICA' : t === 'dispatching' ? 'Distribution Weights' : 'Users'}
+            {t === 'loss' ? 'Loss Config' : t === 'anagrafica' ? 'ANAGRAFICA' : t === 'dispatching' ? 'Distribution Weights' : t === 'users' ? 'Users' : 'Accounts'}
           </button>
         ))}
       </div>
@@ -951,6 +969,93 @@ export default function AdminPage() {
                 </table>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Accounts tab ── */}
+      {tab === 'accounts' && isAdmin && (
+        <div className="space-y-4">
+          {/* Existing accounts */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100">
+              <h2 className="text-sm font-semibold text-slate-700">Active Accounts</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Each account has an isolated PostgreSQL schema. New accounts added here are automatically
+                picked up by the nightly sync and ingestion pipeline.
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-slate-400 uppercase tracking-wide text-[10px] border-b border-slate-100">
+                    <th className="text-left px-5 py-3 font-medium">Account ID</th>
+                    <th className="text-left px-4 py-3 font-medium">Display Name</th>
+                    <th className="text-left px-4 py-3 font-medium">Schema</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accounts.map(a => (
+                    <tr key={a.account_id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                      <td className="px-5 py-3 font-mono font-medium text-slate-800">{a.account_id}</td>
+                      <td className="px-4 py-3 text-slate-600">{a.display_name ?? '—'}</td>
+                      <td className="px-4 py-3 font-mono text-slate-400">{a.schema_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Add new account */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
+            <h2 className="text-sm font-semibold text-slate-700 mb-1">Add New Account</h2>
+            <p className="text-xs text-slate-500 mb-4">
+              Creates a new PostgreSQL schema with all SII tables and registers the account
+              in the sync pipeline. Account ID must be uppercase letters, digits, and underscores.
+            </p>
+
+            {accountCreated && (
+              <div className="mb-4 px-4 py-3 bg-green-50 border border-green-200 rounded-xl text-sm text-green-700">
+                Account <span className="font-mono font-semibold">{accountCreated}</span> created successfully.
+                Create a data folder at <span className="font-mono">/opt/sii/data/{accountCreated}/</span> on the server
+                and the next sync will pick it up automatically.
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account ID</label>
+                <input
+                  value={accountForm.account_id}
+                  onChange={e => setAccountForm(f => ({ ...f, account_id: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') }))}
+                  className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. NEWCO"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-slate-500 uppercase tracking-wide">Display Name</label>
+                <input
+                  value={accountForm.display_name}
+                  onChange={e => setAccountForm(f => ({ ...f, display_name: e.target.value }))}
+                  className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g. New Company Srl"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 mt-4">
+              <button
+                onClick={() => { setAccountCreated(null); addAccount.mutate() }}
+                disabled={!accountForm.account_id || !accountForm.display_name || addAccount.isPending}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+              >
+                {addAccount.isPending ? 'Creating…' : 'Create Account'}
+              </button>
+              {accountFormError && (
+                <span className="text-sm text-red-600">{accountFormError}</span>
+              )}
+            </div>
           </div>
         </div>
       )}

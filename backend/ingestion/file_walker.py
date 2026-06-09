@@ -29,9 +29,12 @@ Design notes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,9 +62,11 @@ def _parse_subfolder(name: str) -> SubfolderMeta | None:
     """
     parts = name.split("_", 2)
     if len(parts) != 3:
+        logger.debug("Skipping subfolder %r: expected 3 underscore-parts, got %d", name, len(parts))
         return None
     meter_type, piva_dist, piva_utente = parts
     if meter_type not in {"2G", "TME"}:
+        logger.debug("Skipping subfolder %r: MeterType %r not in {'2G', 'TME'}", name, meter_type)
         return None
     return SubfolderMeta(
         meter_type=meter_type,

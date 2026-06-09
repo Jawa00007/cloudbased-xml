@@ -294,6 +294,17 @@ export const createUser    = (body: UserCreate) => post<User>('/admin/users', bo
 export const updateUser    = (id: number, body: UserUpdate) => put<User>(`/admin/users/${id}`, body)
 export const deleteUser    = (id: number) => del(`/admin/users/${id}`)
 
+// ── Account management ────────────────────────────────────────────────────────
+
+export interface AccountCreate {
+  account_id: string
+  display_name: string
+  schema_name?: string
+}
+
+export const createAccount = (body: AccountCreate) =>
+  post<Account>('/admin/accounts', body)
+
 // ── System status ─────────────────────────────────────────────────────────────
 
 export const fetchSystemStatus = () => get<SystemStatus>('/admin/system/status')

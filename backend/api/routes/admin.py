@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
@@ -17,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 import asyncio
 
 from backend.api.auth import Auth, require_admin, require_auth
+from backend.core.config import settings
 from backend.db.retention import retention_cutoff, run_monthly_retention
 from backend.api.routes.forecast import start_forecast_job
 from backend.api.schemas import (
@@ -27,9 +29,12 @@ from backend.api.schemas import (
     LossRuleIn,
     LossRuleOut,
 )
-from backend.db.session import get_public_session, get_session
+from backend.db.session import engine as db_engine, get_public_session, get_session
 from backend.db.upsert import upsert_anagrafica
+from backend.ingestion.file_walker import walk_account
 from backend.ingestion.ingest import schema_for
+from backend.models.accounts import Account
+from backend.models.base import Base
 from backend.models.config import DispatchingConfig, LossConfig
 from backend.parser.anagrafica_parser import parse_anagrafica_bytes
 
@@ -151,6 +156,15 @@ async def get_system_status(auth: _AdminAuth) -> SystemStatus:
     )
 
 
+def _next_month(mese_anno: str) -> str:
+    """'05/2026' → '06/2026',  '12/2026' → '01/2027'"""
+    mm, yyyy = mese_anno.split("/")
+    month, year = int(mm), int(yyyy)
+    if month == 12:
+        return f"01/{year + 1}"
+    return f"{month + 1:02d}/{year}"
+
+
 # ── ANAGRAFICA upload ─────────────────────────────────────────────────────────
 
 @router.post(
@@ -179,7 +193,9 @@ async def upload_anagrafica(
         n = await upsert_anagrafica(session, records, account_id)
 
     mese_anno = records[0].mese_anno if records else ""
-    job_id = start_forecast_job(account_id, mese_anno) if mese_anno else None
+    # Italian server names ANAGRAFICA with current month but data is for the next month
+    forecast_month = _next_month(mese_anno) if mese_anno else ""
+    job_id = start_forecast_job(account_id, forecast_month, ana_mese_anno=mese_anno) if mese_anno else None
     return AnagraficaUploadOut(
         message="ANAGRAFICA uploaded",
         account_id=account_id,
@@ -526,3 +542,135 @@ async def get_retention_log(auth: _AdminAuth) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ── Import diagnostic ─────────────────────────────────────────────────────────
+
+@router.get(
+    "/debug/disk-scan",
+    summary="Scan local data directory and report import status for an account (admin only)",
+)
+async def disk_scan(account: str, auth: _AdminAuth) -> dict:
+    """
+    Walk the local data directory for `account` and return:
+    - total_on_disk: total processable files found on disk
+    - not_imported: files on disk with no status='ok' DB row
+    - in_db_as_error: filenames with status='error' (retried each run, keep failing)
+    - skipped_subfolders: subfolder names that file_walker ignores (wrong structure / MeterType)
+    """
+    data_root = Path(settings.SII_DATA_PATH)
+    account_root = data_root / account
+    if not account_root.exists():
+        raise HTTPException(status_code=404, detail=f"Account directory not found: {account_root}")
+
+    schema = schema_for(account)
+
+    # Load DB state for this account
+    processed_ok: set[str] = set()
+    error_files: list[str] = []
+    try:
+        async with get_session(schema) as session:
+            rows = (await session.execute(text(
+                "SELECT file_name, status FROM files WHERE account_id = :acct"
+            ), {"acct": account})).fetchall()
+            for row in rows:
+                if row[1] == "ok":
+                    processed_ok.add(row[0])
+                elif row[1] == "error":
+                    error_files.append(row[0])
+    except Exception:
+        pass
+
+    # Walk disk and collect files not yet ok
+    not_imported: list[str] = []
+    total_on_disk = 0
+    skipped_subfolders: list[str] = []
+
+    # Collect skipped subfolders separately
+    for subfolder_dir in sorted(account_root.iterdir()):
+        if not subfolder_dir.is_dir():
+            continue
+        parts = subfolder_dir.name.split("_", 2)
+        if len(parts) != 3 or parts[0] not in {"2G", "TME"}:
+            skipped_subfolders.append(subfolder_dir.name)
+
+    for entry in walk_account(account_root, account):
+        total_on_disk += 1
+        if entry.xml_name not in processed_ok:
+            not_imported.append(entry.xml_name)
+
+    return {
+        "account": account,
+        "total_on_disk": total_on_disk,
+        "already_imported": total_on_disk - len(not_imported),
+        "not_imported_count": len(not_imported),
+        "not_imported": not_imported[:200],  # cap list to avoid huge response
+        "in_db_as_error_count": len(error_files),
+        "in_db_as_error": error_files[:100],
+        "skipped_subfolders": skipped_subfolders,
+    }
+
+
+# ── Account management ────────────────────────────────────────────────────────
+
+class AccountCreate(BaseModel):
+    account_id: str
+    display_name: str
+    schema_name: str | None = None
+
+
+@router.post(
+    "/accounts",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new account: PostgreSQL schema + tables + registry entry (admin only)",
+)
+async def create_account(body: AccountCreate, auth: _AdminAuth) -> dict:
+    """
+    1. Validates account_id (uppercase alphanumeric + underscores only).
+    2. Creates a new PostgreSQL schema.
+    3. Creates all SII tables in that schema.
+    4. Inserts a row into public.accounts.
+    """
+    import re
+    if not re.match(r"^[A-Z0-9_]+$", body.account_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="account_id must be uppercase alphanumeric and underscores only",
+        )
+
+    schema = body.schema_name or body.account_id.lower().replace(" ", "_")
+
+    # Check not already registered
+    async with get_public_session() as session:
+        existing = (await session.execute(
+            text("SELECT 1 FROM public.accounts WHERE account_id = :aid"),
+            {"aid": body.account_id},
+        )).fetchone()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Account {body.account_id!r} already exists",
+            )
+
+    # Create schema + tables using raw engine connection
+    async with db_engine.begin() as conn:
+        await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+        await conn.execute(text(f'SET search_path TO "{schema}", public'))
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, checkfirst=True))
+
+    # Register in public.accounts
+    async with get_public_session() as session:
+        acct = Account(
+            account_id=body.account_id,
+            schema_name=schema,
+            display_name=body.display_name,
+            active=True,
+        )
+        session.add(acct)
+        await session.commit()
+
+    return {
+        "account_id": body.account_id,
+        "schema_name": schema,
+        "display_name": body.display_name,
+    }
