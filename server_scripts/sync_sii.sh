@@ -148,8 +148,11 @@ except: print('yes')
 " 2>/dev/null)
             [ "$_DONE" = "yes" ] && break
         done
+    elif [ "$_HTTP" = "409" ]; then
+        # API lock held by another sync — skip this account, retry next cron run
+        log "$ACC: API busy (409) — another sync is running, skipping until next cron run"
     else
-        # Fallback: API unavailable or lock held — run directly
+        # API unavailable (down, 500, timeout) — fall back to docker exec
         log "$ACC: API returned HTTP $_HTTP, falling back to docker exec"
         docker exec sii-api-1 python -m backend.ingestion.ingest \
             --account=$ACC 2>&1 | tail -3

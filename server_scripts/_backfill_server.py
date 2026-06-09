@@ -32,6 +32,7 @@ def write_status(running, round_num, new_files=None, current_account=None):
     try:
         data = {
             "running": running,
+            "pid": os.getpid() if running else None,
             "round": round_num if running else None,
             "current": current_account,
             "rounds_done": round_num - 1,

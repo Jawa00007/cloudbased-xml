@@ -179,7 +179,7 @@ async def health() -> dict:
     if job and job.next_run_time:
         next_run = job.next_run_time.isoformat()
 
-    return {
+    body = {
         "status": "ok" if db_status == "ok" else "degraded",
         "environment": settings.ENVIRONMENT,
         "database": {"status": db_status, "latency_ms": db_latency_ms},
@@ -190,3 +190,7 @@ async def health() -> dict:
             "current_account": guard.current_account,
         },
     }
+    if db_status != "ok":
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content=body)
+    return body

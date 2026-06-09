@@ -74,11 +74,26 @@ guard = IngestionGuard()
 
 
 def backfill_active() -> bool:
-    """Return True if the external sii-backfill Docker container is currently running."""
+    """Return True if the external backfill process is currently running.
+
+    Checks PID liveness so a killed backfill process doesn't permanently block syncs.
+    """
     try:
+        import os
         from backend.core.config import settings  # deferred to avoid import cycles
         p = Path(settings.SII_DATA_PATH) / ".backfill_status.json"
-        return p.exists() and bool(json.loads(p.read_text()).get("running"))
+        if not p.exists():
+            return False
+        data = json.loads(p.read_text())
+        if not data.get("running"):
+            return False
+        pid = data.get("pid")
+        if pid is not None:
+            try:
+                os.kill(int(pid), 0)  # signal 0 checks existence only
+            except (ProcessLookupError, PermissionError):
+                return False  # process dead → stale lock
+        return True
     except Exception:
         return False
 
