@@ -21,9 +21,10 @@ Each account has its own PostgreSQL schema. Password rotation every 3 months.
 - **Backend**: Python 3.14, FastAPI, SQLAlchemy (async) ≥2.0.37, Alembic, Pydantic v2
 - **Frontend**: React 18, TypeScript, Vite, Recharts, TanStack Query, Tailwind CSS
 - **Database**: PostgreSQL 16 (local Docker on DigitalOcean droplet), one schema per account
-- **Infrastructure**: DigitalOcean Droplet (4 vCPU / 8 GB RAM / 160 GB SSD); Italian server pushes/syncs XML files directly to the droplet — no VPN needed
+- **Infrastructure**: DigitalOcean Droplet (4 vCPU / 8 GB RAM / 160 GB SSD) at `104.248.32.23`; Italian server pushes/syncs XML files directly to the droplet — no VPN needed
 - **Scheduler**: APScheduler — nightly at 02:00 UTC, plus manual trigger via API
 - **Ingestion**: Reads XML/ZIP files from a local directory on the droplet populated by the Italian server
+- **CI/CD**: GitHub Actions — push to `staging` → deploys staging stack (port 8080); push to `main` → deploys production. See `.github/workflows/deploy.yml`.
 
 ---
 
@@ -60,7 +61,7 @@ report.py           # Standalone: connects to DB, outputs reports/<account>.html
 ## Key Commands
 
 ```bash
-# Backend — install and run
+# Backend — install and run (local dev)
 pip install -r requirements.txt
 uvicorn backend.api.main:app --reload --port 8000
 
@@ -77,8 +78,23 @@ py report.py --account=BAT        # generates reports/report_bat.html
 # Run tests
 pytest backend/tests/ -v
 
-# Docker — full stack
+# Docker — full stack (local)
 docker-compose up --build
+
+# ── Deploy ────────────────────────────────────────────────────────────────────
+# All deploys are triggered by git push — GitHub Actions handles the rest.
+
+# Deploy to staging (test at http://104.248.32.23:8080/)
+git checkout staging
+git push origin staging
+
+# Promote to production (live at https://forecast.dinamoservice.it/)
+git checkout main
+git merge staging
+git push origin main
+
+# Check deploy status
+# → https://github.com/STG-707/cloudbased-xml/actions
 ```
 
 > **Windows note:** Use `py` not `python`. psycopg requires `WindowsSelectorEventLoopPolicy`
@@ -452,7 +468,8 @@ kept permanently.
 **Scheduling:**
 - Nightly: APScheduler fires at 02:00 UTC — `ingest --all`
 - Manual: `POST /sync` or `POST /sync/{account}` via API / Sync page in UI
-- Historical backfill: `run_backfill.sh` runs each account via `docker run --rm sii-backfill`
+- Historical backfill: `backfill_all.py` runs on server (`nohup python3 /opt/sii/backfill_all.py &`)
+- Cron (`sync_sii.sh`): rsyncs from Italian server then calls `POST /api/sync/{account}`; if API returns 409 (another sync running) it **skips** that account rather than falling back to docker exec (prevents concurrent ingest)
 
 ---
 
@@ -570,10 +587,14 @@ CREATE TABLE public.accounts (
 - [x] Docker setup + DigitalOcean Droplet deployment
 - [x] Nginx reverse proxy (HTTPS, rate limiting, security headers)
 - [x] Prometheus + Grafana monitoring stack (`docker-compose.monitoring.yml`)
+- [x] API hot-standby replica (`api2` at 172.20.0.20, nginx `backup` upstream)
+- [x] GitHub Actions CI/CD — push to `staging` or `main` auto-deploys
+- [x] Staging environment (port 8080, `sii_staging` DB, `staging-api` container)
 
 **Pending**
 - [ ] Historical data backfill — pipe remaining accounts' XML archives through ingestion
-- [ ] Confirm Italian server sync mechanism (push schedule, directory layout, file format)
+- [ ] Add GitHub Secrets (`DEPLOY_HOST`, `DEPLOY_SSH_KEY`) to enable first CI/CD run
+- [ ] Create `/opt/sii/.env.staging` on server (copy from `.env.staging.example`)
 
 ---
 
@@ -649,6 +670,37 @@ The old combined `WHERE account_id = :acct OR account_id IS NULL` query was frag
 ### Sync tab vs admin uploads
 
 The Sync tab (`/sync/status`) tracks XML file ingestion runs (nightly scheduler at 02:00 UTC + manual `POST /sync`). Admin uploads (ANAGRAFICA, loss config, dispatching weights) are configuration operations — they do not appear in the Sync tab. The Sync tab is empty until at least one ingestion sync runs.
+
+### API failover — health endpoint returns 503 on DB failure (`backend/api/main.py`)
+
+`/api/health` previously always returned HTTP 200 even when the DB was unreachable (body said `"status":"degraded"` but HTTP code stayed 200). The Docker healthcheck uses `urllib.request.urlopen` which only fails on non-2xx codes, so a DB outage never marked the container unhealthy and nginx never promoted `api2`. Fix: health now returns `JSONResponse(status_code=503, ...)` when `db_status != "ok"`. Failover chain: DB down → 503 → Docker marks `sii-api-1` unhealthy → nginx routes to `api2` (172.20.0.20, 2.5 GB / 2 CPU).
+
+### Backfill stale lock PID check (`backend/ingestion/lock.py`)
+
+If `backfill_all.py` is killed (SIGKILL, OOM, server crash), `.backfill_status.json` is left with `"running": true` permanently, blocking all subsequent syncs with 409 forever. Fix: `backfill_active()` now reads `"pid"` from the status file and calls `os.kill(pid, 0)` to check liveness. If the process is dead, the lock is treated as stale and `False` is returned. `backfill_all.py` writes its own PID into the status file on every `write_status()` call.
+
+### Sync visibility — cron uses API trigger (`server_scripts/sync_sii.sh`)
+
+Originally `sync_sii.sh` called `docker exec sii-api-1 python -m backend.ingestion.ingest` directly, bypassing the API's `IngestionGuard`. This meant syncs were invisible in the Sync tab and multiple cron instances could run concurrently. Fix: `sync_sii.sh` now calls `POST /api/sync/{account}`, polls `/api/sync/status` until done, and falls back to `docker exec` only when the API itself is unreachable (5xx/timeout). HTTP 409 (lock held) skips the account silently — it will be retried on the next cron run.
+
+### Concurrent cron guard (`server_scripts/sync_sii.sh`)
+
+Multiple cron slots (02:30, 04:30, …) could spawn overlapping `sync_sii.sh` processes, each triggering its own ingest runs and saturating the DB. Fix: a PID-based lock file at `/var/run/sync_sii.lock` — new instances exit immediately if a previous one is still alive.
+
+### Coverage cache invalidation (`backend/api/routes/sync.py`)
+
+`_coverage_cache` had a 60-second TTL but was never explicitly invalidated after a sync completed. The UI showed stale coverage data after every sync. Fix: added `_coverage_cache["expires"] = 0.0` in the `finally` block of `_run_ingest()` so the next coverage request always fetches fresh data.
+
+### CI/CD deployment architecture
+
+All production and staging deploys flow through GitHub Actions (`.github/workflows/deploy.yml`). The server no longer has files edited directly — `git reset --hard origin/<branch>` on the server ensures the working tree always matches the committed state. Deploy key at `/root/.ssh/deploy_key` (ed25519) is in GitHub Secrets as `DEPLOY_SSH_KEY`. The server's git state was previously diverged (direct edits); it has been reset to track `origin/main`.
+
+**Staging environment:**
+- `staging-api` container at `172.20.0.30`, 1 GB / 1 CPU
+- Database: `sii_staging` (separate PostgreSQL database, same instance)
+- nginx: port 8080 HTTP server block → `http://104.248.32.23:8080/`
+- Config: `/opt/sii/.env.staging` (never committed)
+- `docker-compose.staging.yml` overlay brings up staging-api alongside production stack
 
 ---
 
