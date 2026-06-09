@@ -33,6 +33,18 @@ schema_for() {
 
 exec >> "$LOGFILE" 2>&1
 
+# Prevent concurrent runs — only one instance at a time
+LOCKFILE="/var/run/sync_sii.lock"
+if [ -f "$LOCKFILE" ]; then
+    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        log "Another sync_sii.sh (PID $OLD_PID) is running — skipping"
+        exit 0
+    fi
+fi
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"' EXIT
+
 # Skip if backfill is running (only applies to cron; backfill itself sets BATCH_SIZE_OVERRIDE)
 if [ -z "$BATCH_SIZE_OVERRIDE" ] && \
    [ -f "$LOCAL_DATA/.backfill_status.json" ] && \
@@ -117,7 +129,31 @@ for ACC in $ACCOUNTS; do
         "$LOCAL_DATA/$ACC/" 2>&1 | tail -2
 
     log "$ACC: ingesting $RSYNC_COUNT files..."
-    docker exec sii-api-1 python -m backend.ingestion.ingest --account=$ACC 2>&1 | tail -3
+    _API_KEY=$(grep '^API_KEY=' /opt/sii/.env | cut -d= -f2- | tr -d '\r\n' 2>/dev/null)
+    _HTTP=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
+        -H "X-API-Key: $_API_KEY" "https://localhost/api/sync/$ACC" 2>/dev/null)
+    if [ "$_HTTP" = "200" ] || [ "$_HTTP" = "202" ]; then
+        # Poll every 15 s until this account is no longer running (max 8 h)
+        _W=0
+        while [ $_W -lt 28800 ]; do
+            sleep 15; _W=$((_W + 15))
+            _DONE=$(curl -sk -H "X-API-Key: $_API_KEY" \
+                "https://localhost/api/sync/status" 2>/dev/null \
+                | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print('no' if any(x.get('account_id')=='$ACC' and x.get('running') for x in d) else 'yes')
+except: print('yes')
+" 2>/dev/null)
+            [ "$_DONE" = "yes" ] && break
+        done
+    else
+        # Fallback: API unavailable or lock held — run directly
+        log "$ACC: API returned HTTP $_HTTP, falling back to docker exec"
+        docker exec sii-api-1 python -m backend.ingestion.ingest \
+            --account=$ACC 2>&1 | tail -3
+    fi
     log "$ACC: done"
 done
 

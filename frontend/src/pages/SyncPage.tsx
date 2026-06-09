@@ -77,7 +77,7 @@ export default function SyncPage() {
     queryKey: ['sync-coverage'],
     queryFn: fetchSyncCoverage,
     refetchInterval: 60_000,
-    staleTime: 50_000,
+    staleTime: 0,
   })
 
   const statuses = syncStatus.data ?? []

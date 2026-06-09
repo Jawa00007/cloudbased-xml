@@ -233,6 +233,7 @@ async def _run_ingest(account_id: str | None) -> None:
         triggered_by = guard.triggered_by  # capture before release clears it
         guard.release()
         finished = datetime.now(timezone.utc)
+        _coverage_cache["expires"] = 0.0  # force fresh coverage on next request
         for acc in accounts_to_run:
             prev = _sync_state.get(acc, _make_status(acc))
             _sync_state[acc] = SyncStatusOut(
