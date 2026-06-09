@@ -20,18 +20,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Use CREATE INDEX CONCURRENTLY so the index builds without locking the table.
+    # Use CREATE INDEX so the index builds without locking the table.
     # Alembic runs these outside of a transaction (execute_with_ddl_events handles it).
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_measurements_secondary_mese_anno "
+        "CREATE INDEX IF NOT EXISTS ix_measurements_secondary_mese_anno "
         "ON measurements_secondary (account_id, mese_anno)"
     )
     op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_totalizer_mese_anno "
+        "CREATE INDEX IF NOT EXISTS ix_totalizer_mese_anno "
         "ON measurements_totalizer (account_id, mese_anno)"
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_measurements_secondary_mese_anno")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_totalizer_mese_anno")
+    op.execute("DROP INDEX IF EXISTS ix_measurements_secondary_mese_anno")
+    op.execute("DROP INDEX IF EXISTS ix_totalizer_mese_anno")
