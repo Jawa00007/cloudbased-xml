@@ -398,7 +398,13 @@ def start_forecast_job(
 ) -> str:
     """Create a forecast background job and return its job_id immediately."""
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "running", "result": None, "error": None}
+    _jobs[job_id] = {
+        "status": "running",
+        "account_id": account_id,
+        "mese_anno": mese_anno,
+        "result": None,
+        "error": None,
+    }
     asyncio.create_task(_run_forecast_job(job_id, account_id, mese_anno, ana_mese_anno or mese_anno))
     return job_id
 
@@ -418,6 +424,19 @@ async def run_generate_forecast(
     Poll GET /forecast/status/{job_id} every few seconds until status is 'done' or 'error'.
     """
     check_account_access(body.account_id, auth)
+    # Prevent two concurrent jobs for the same account + month — the second DELETE
+    # would race with the first job's inserts and produce an empty forecast.
+    already_running = [
+        j for j in _jobs.values()
+        if j.get("status") == "running"
+        and j.get("account_id") == body.account_id
+        and j.get("mese_anno") == body.mese_anno
+    ]
+    if already_running:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Forecast already running for {body.account_id} / {body.mese_anno}. Please wait.",
+        )
     job_id = start_forecast_job(body.account_id, body.mese_anno, body.anagrafica_mese_anno)
     return {"job_id": job_id, "status": "running"}
 
@@ -728,6 +747,56 @@ async def export_measurements_wide(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# ── Summary — aggregate stats without row data (must be before catch-all) ─────
+
+@router.get(
+    "/summary/{account_id}/{mese_anno:path}",
+    summary="Aggregate forecast stats for an account and month (no row data)",
+)
+async def get_forecast_summary(
+    account_id: str,
+    mese_anno: str,
+    auth: _Auth,
+) -> dict:
+    """
+    Returns pods, total_periods, total_mwh_with_loss, and source_breakdown
+    using COUNT/SUM — does not fetch all rows, so it's fast even for large accounts.
+    Used by the UI stats cards to show correct totals instead of the truncated
+    row-fetch (which has a default limit=2976).
+    """
+    check_account_access(account_id, auth)
+    schema = schema_for(account_id)
+    async with get_session(schema) as session:
+        row = await session.execute(text("""
+            SELECT
+                COUNT(DISTINCT pod)          AS pods,
+                COUNT(*)                     AS total_periods,
+                ROUND(SUM(ea_kwh_with_loss) / 1000.0, 3) AS total_mwh
+            FROM forecast_periods
+            WHERE account_id = :acct AND mese_anno = :ma
+        """), {"acct": account_id, "ma": mese_anno})
+        agg = row.fetchone()
+
+        src_rows = await session.execute(text("""
+            SELECT source_type, COUNT(*) AS cnt
+            FROM forecast_periods
+            WHERE account_id = :acct AND mese_anno = :ma
+            GROUP BY source_type
+        """), {"acct": account_id, "ma": mese_anno})
+        src = {r[0]: r[1] for r in src_rows.fetchall()}
+
+    if not agg or agg[0] == 0:
+        return {"pods": 0, "total_periods": 0, "total_mwh": 0.0, "source_breakdown": {}}
+
+    total = agg[2] or 0.0
+    return {
+        "pods": agg[0],
+        "total_periods": agg[1],
+        "total_mwh": float(total),
+        "source_breakdown": {k: int(v) for k, v in src.items()},
+    }
 
 
 # ── Catch-all — must come last ────────────────────────────────────────────────

@@ -7,7 +7,7 @@ import {
 import {
   fetchAccounts, fetchPods, fetchForecast, generateForecast, fetchForecastStatus,
   fetchForecastCompare, fetchForecastCompareDP,
-  fetchAnagraficaMonths, fetchMeasurementMonths,
+  fetchAnagraficaMonths, fetchMeasurementMonths, fetchForecastSummary,
   downloadForecastExcel, downloadForecastPodsExcel, downloadMeasurementsWideExcel,
   downloadCompareDPExcel, downloadComparePodExcel,
 } from '../api/client'
@@ -130,6 +130,13 @@ function GenerateTab() {
     enabled: !!accountId && !!meseAnno,
   })
 
+  const { data: summary } = useQuery({
+    queryKey: ['forecast-summary', accountId, meseAnno],
+    queryFn: () => fetchForecastSummary(accountId, meseAnno),
+    enabled: !!accountId && !!meseAnno && forecast.length > 0,
+    staleTime: 30_000,
+  })
+
   // Auto-clear job-not-found error when forecast data is present — data survived the restart
   useEffect(() => {
     if (forecast.length > 0 && error === 'Job not found — the server may have restarted. Please try again.') {
@@ -150,9 +157,15 @@ function GenerateTab() {
   const chartData = Object.entries(dailyMap).sort(([a], [b]) => a.localeCompare(b))
     .map(([date, vals]) => ({ date: date.slice(5), ...vals }))
 
-  const sourceCount: Record<string, number> = {}
-  for (const row of forecast) sourceCount[row.source_type] = (sourceCount[row.source_type] ?? 0) + 1
+  const localSourceCount: Record<string, number> = {}
+  for (const row of forecast) localSourceCount[row.source_type] = (localSourceCount[row.source_type] ?? 0) + 1
   const totalRows = forecast.length
+
+  const displayPods = summary?.pods ?? pods.length
+  const displayMwh = summary?.total_mwh ?? forecast.reduce((s, r) => s + (r.ea_mwh_with_loss ?? 0), 0)
+  const displayPeriods = summary?.total_periods ?? totalRows
+  const displaySourceCount = summary?.source_breakdown ?? localSourceCount
+  const displayTotal = summary?.total_periods ?? totalRows
 
   const isRunning = jobStatus === 'running' || generate.isPending
 
@@ -355,9 +368,9 @@ function GenerateTab() {
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
-              { label: 'PODs', value: pods.length },
-              { label: 'Total MWh (with loss)', value: itNum(forecast.reduce((s, r) => s + (r.ea_mwh_with_loss ?? 0), 0), { maximumFractionDigits: 1 }) },
-              { label: 'Periods', value: itNum(totalRows, { maximumFractionDigits: 0 }) },
+              { label: 'PODs', value: itNum(displayPods, { maximumFractionDigits: 0 }) },
+              { label: 'Total MWh (with loss)', value: itNum(displayMwh, { maximumFractionDigits: 1 }) },
+              { label: 'Periods', value: itNum(displayPeriods, { maximumFractionDigits: 0 }) },
               { label: 'Month', value: meseAnno },
             ].map(c => (
               <div key={c.label} className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
@@ -371,12 +384,12 @@ function GenerateTab() {
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
             <h2 className="text-sm font-semibold text-slate-700 mb-3">Data Source Breakdown</h2>
             <div className="flex flex-wrap gap-3">
-              {Object.entries(sourceCount).sort(([, a], [, b]) => b - a).map(([type, count]) => (
+              {Object.entries(displaySourceCount).sort(([, a], [, b]) => b - a).map(([type, count]) => (
                 <div key={type} className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
                   style={{ backgroundColor: `${SOURCE_COLORS[type]}18`, color: SOURCE_COLORS[type] }}>
                   <span className="w-2 h-2 rounded-full" style={{ backgroundColor: SOURCE_COLORS[type] }} />
                   {SOURCE_LABELS[type] ?? type}
-                  <span className="font-semibold">{((count / totalRows) * 100).toFixed(1)}%</span>
+                  <span className="font-semibold">{displayTotal > 0 ? ((count / displayTotal) * 100).toFixed(1) : '0.0'}%</span>
                 </div>
               ))}
             </div>

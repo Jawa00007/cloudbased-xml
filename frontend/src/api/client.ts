@@ -165,6 +165,16 @@ export const fetchForecastStatus = (job_id: string) =>
 export const fetchForecast = (account_id: string, mese_anno: string, pod?: string) =>
   get<ForecastPeriod[]>(`/forecast/${account_id}/${encodeURIComponent(mese_anno)}`, pod ? { pod } : {})
 
+export interface ForecastSummary {
+  pods: number
+  total_periods: number
+  total_mwh: number
+  source_breakdown: Record<string, number>
+}
+
+export const fetchForecastSummary = (account_id: string, mese_anno: string) =>
+  get<ForecastSummary>(`/forecast/summary/${account_id}/${encodeURIComponent(mese_anno)}`)
+
 export const fetchForecastCompare = (
   account_id: string, pod: string, from_date: string, to_date: string,
 ) => get<CompareOut>('/forecast/compare', { account_id, pod, from_date, to_date })

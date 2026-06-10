@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 from dataclasses import dataclass
 from datetime import date
 
@@ -253,14 +254,24 @@ async def generate_forecast_streaming(
     puntos = list({a["punto_dispacciamento"] for a in ana_pods if a["punto_dispacciamento"]})
     dispatch_map = await _load_dispatching_weights_batch(session, account_id, puntos)
 
+    total_chunks = (len(ana_pods) + pods_per_chunk - 1) // pods_per_chunk
+
     # Process pods in chunks; load pod_meta and source_daily per chunk only
     # so peak RAM ~ pods_per_chunk × 30 days × 96 periods × ~50 bytes ≈ 7 MB/chunk
     for chunk_start in range(0, len(ana_pods), pods_per_chunk):
+        chunk_num = chunk_start // pods_per_chunk + 1
         chunk_anas = ana_pods[chunk_start : chunk_start + pods_per_chunk]
         chunk_pods = [a["pod"] for a in chunk_anas]
 
-        pod_meta_map     = await _load_pod_metadata_batch(session, account_id, chunk_pods)
+        _tc = _time.monotonic()
+        pod_meta_map = await _load_pod_metadata_batch(session, account_id, chunk_pods)
+        _t1 = _time.monotonic()
         source_daily_map = await _load_source_daily_batch(session, account_id, chunk_pods, source_month)
+        _t2 = _time.monotonic()
+        log.info(
+            "Forecast %s chunk %d/%d: meta=%.2fs source=%.2fs pods=%d",
+            account_id, chunk_num, total_chunks, _t1 - _tc, _t2 - _t1, len(chunk_pods),
+        )
 
         rows: list[ForecastRow] = []
         for ana in chunk_anas:
