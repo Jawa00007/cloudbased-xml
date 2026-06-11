@@ -166,12 +166,17 @@ async def health() -> dict:
     try:
         t = time.monotonic()
         async with get_public_session() as s:
-            await asyncio.wait_for(s.execute(text("SELECT 1")), timeout=2.0)
+            await asyncio.wait_for(s.execute(text("SELECT 1")), timeout=5.0)
         db_latency_ms = round((time.monotonic() - t) * 1000, 1)
+    except asyncio.TimeoutError:
+        # DB is reachable but slow (e.g. heavy ingest saturating the pool).
+        # Return 200 so Docker/nginx don't trigger unnecessary failover.
+        db_latency_ms = 5000
+        db_status = "degraded"
     except Exception:
         db_status = "error"
 
-    _db_health_gauge.set(1 if db_status == "ok" else 0)
+    _db_health_gauge.set(0 if db_status == "error" else 1)
     _ingestion_running.set(1 if guard.is_running() else 0)
 
     next_run = None
@@ -190,7 +195,9 @@ async def health() -> dict:
             "current_account": guard.current_account,
         },
     }
-    if db_status != "ok":
+    # Return 503 only when DB is fully unreachable; degraded (slow) still returns 200
+    # so Docker healthcheck and nginx passive checks don't trigger false failovers.
+    if db_status == "error":
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=503, content=body)
     return body
