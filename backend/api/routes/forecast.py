@@ -391,13 +391,14 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
                     got_any = True
                     _t_recv = time.monotonic()
 
-                    async with await write_conn.copy(copy_sql) as copy:
-                        for r in chunk:
-                            await copy.write_row((
-                                account_id, r.pod, r.mese_anno, r.punto_dispacciamento,
-                                r.forecast_date, r.source_date, r.periodo,
-                                r.ea_kwh, r.ea_kwh_with_loss, r.loss_pct, r.source_type,
-                            ))
+                    async with write_conn.cursor() as _cur:
+                        async with _cur.copy(copy_sql) as copy:
+                            for r in chunk:
+                                await copy.write_row((
+                                    account_id, r.pod, r.mese_anno, r.punto_dispacciamento,
+                                    r.forecast_date, r.source_date, r.periodo,
+                                    r.ea_kwh, r.ea_kwh_with_loss, r.loss_pct, r.source_type,
+                                ))
 
                     _rows = len(chunk)
                     n += _rows
