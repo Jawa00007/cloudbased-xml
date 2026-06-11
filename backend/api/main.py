@@ -154,6 +154,12 @@ app.include_router(users_router,       prefix=_API)
 app.include_router(forecast_router,    prefix=_API)
 
 
+@app.get("/api/ping", tags=["system"])
+async def ping() -> dict:
+    """Liveness probe — no DB query. Used by Docker healthcheck so ingest load never causes false failover."""
+    return {"status": "ok"}
+
+
 @app.get("/api/health", tags=["system"])
 async def health() -> dict:
     """
