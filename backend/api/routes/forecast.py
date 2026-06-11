@@ -347,19 +347,24 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
         t1 = time.monotonic()
         n = 0
         got_any = False
-        # Read session stays open for the full generator (no mid-stream commits
-        # so the connection is never released back to the pool mid-iteration,
-        # keeping search_path = schema stable for all source-data queries).
-        async with get_session(schema) as read_session:
+        # Read session: stays open for the full generator, no mid-stream commits,
+        # so search_path stays stable across all source-data queries.
+        # Write session: ONE session for the entire write loop — no per-chunk
+        # open/commit/close overhead (69 commits → 1).  search_path stays stable
+        # because the connection is never released back to the pool mid-loop.
+        async with get_session(schema) as read_session, \
+                   get_session(schema) as write_session:
             async for chunk in generate_forecast_streaming(
                 read_session, account_id, mese_anno, ana_month
             ):
                 got_any = True
-                # Fresh write session per chunk — each new get_session() re-runs
-                # SET search_path so inserts always target the right schema,
-                # not whatever public.* the pool might hand back after a commit.
-                async with get_session(schema) as write_session:
-                    n += await insert_forecast_chunk(write_session, chunk, account_id)
+                tw = time.monotonic()
+                rows_written = await insert_forecast_chunk(write_session, chunk, account_id)
+                n += rows_written
+                logger.info(
+                    "Forecast %s write chunk: rows=%d write=%.2fs",
+                    account_id, rows_written, time.monotonic() - tw,
+                )
 
             t2 = time.monotonic()
             logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
