@@ -39,8 +39,21 @@ jobs:
 
             if [ "${{ github.ref_name }}" = "main" ]; then
               docker compose build api api2
-              docker compose up -d --no-deps api api2
-              echo "=== Production API deployed ==="
+
+              # Rolling restart: bring up api2 first, wait for it to be healthy,
+              # then restart api1 — ensures nginx always has one healthy backend.
+              docker compose up -d --no-deps api2
+              echo "Waiting for api2 to become healthy..."
+              for i in $(seq 1 15); do
+                if curl -s http://172.20.0.20:8000/api/ping | grep -q '"ok"'; then
+                  echo "api2 healthy after ${i}x5s"
+                  break
+                fi
+                sleep 5
+              done
+
+              docker compose up -d --no-deps api
+              echo "=== Production API deployed (rolling) ==="
             else
               docker compose -f docker-compose.yml -f docker-compose.staging.yml \
                 build staging-api
