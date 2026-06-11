@@ -361,11 +361,22 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
         # is minimised. Unique index is absent so inserts are fast.
         async with get_session(schema) as read_session, \
                    get_session(schema) as write_session:
+            _last_yield = time.monotonic()
             async for chunk in generate_forecast_streaming(
                 read_session, account_id, mese_anno, ana_month
             ):
                 got_any = True
-                n += await insert_forecast_chunk(write_session, chunk, account_id)
+                _t_recv = time.monotonic()
+                _rows = await insert_forecast_chunk(write_session, chunk, account_id)
+                n += _rows
+                logger.info(
+                    "Forecast %s: gen=%.2fs insert=%.2fs rows=%d",
+                    account_id,
+                    _t_recv - _last_yield,
+                    time.monotonic() - _t_recv,
+                    _rows,
+                )
+                _last_yield = time.monotonic()
 
             t2 = time.monotonic()
             logger.info("TIMING generate+insert: %.1fs, rows=%d", t2 - t1, n)
