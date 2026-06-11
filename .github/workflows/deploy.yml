@@ -90,7 +90,7 @@ jobs:
           script: |
             sleep 8
             if [ "${{ github.ref_name }}" = "main" ]; then
-              curl -sf https://localhost/api/health | python3 -c \
+              curl -sfk https://localhost/api/health | python3 -c \
                 "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d['status']=='ok' else 1)"
             else
               curl -sf http://localhost:8080/api/health | python3 -c \
