@@ -5,7 +5,7 @@ import type {
   SystemStatus, User, UserCreate, UserUpdate,
 } from './types'
 
-const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const BASE = import.meta.env.VITE_API_URL ?? '/api'
 
 const TOKEN_KEY = 'sii_token'
 
