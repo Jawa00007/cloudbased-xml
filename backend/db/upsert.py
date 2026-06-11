@@ -397,16 +397,19 @@ _CHUNK = 5_900
 
 
 async def drop_forecast_unique_idx(session: AsyncSession) -> None:
-    """Drop the unique index on forecast_periods before a bulk insert to avoid per-row B-tree
-    maintenance on a large table. Must be followed by create_forecast_unique_idx after commit."""
-    await session.execute(text("DROP INDEX IF EXISTS uq_forecast_period_key"))
+    """Drop the unique constraint on forecast_periods before a bulk insert to avoid per-row
+    B-tree maintenance on a large table. Must be followed by create_forecast_unique_idx."""
+    # The constraint backs a named index — must drop via ALTER TABLE, not DROP INDEX.
+    await session.execute(text(
+        "ALTER TABLE forecast_periods DROP CONSTRAINT IF EXISTS uq_forecast_period_key"
+    ))
 
 
 async def create_forecast_unique_idx(session: AsyncSession) -> None:
-    """Recreate the unique index on forecast_periods after a bulk insert."""
+    """Recreate the unique constraint on forecast_periods after a bulk insert."""
     await session.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_period_key "
-        "ON forecast_periods (account_id, pod, forecast_date, periodo)"
+        "ALTER TABLE forecast_periods ADD CONSTRAINT uq_forecast_period_key "
+        "UNIQUE (account_id, pod, forecast_date, periodo)"
     ))
 
 
