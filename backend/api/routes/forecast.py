@@ -23,6 +23,8 @@ import uuid
 from datetime import date
 from typing import Annotated, Any
 
+import psycopg  # psycopg3 — used for COPY FROM STDIN in bulk forecast insert
+
 logger = logging.getLogger(__name__)
 
 import openpyxl
@@ -37,9 +39,10 @@ from backend.api.schemas import (
     ForecastGenerateOut,
     ForecastPeriodOut,
 )
+from backend.core.config import settings
 from backend.db.session import get_session
 from backend.db.upsert import (
-    delete_forecast_month, insert_forecast_chunk, upsert_forecast_periods,
+    upsert_forecast_periods,
     drop_forecast_unique_idx, create_forecast_unique_idx,
 )
 from backend.forecast.engine import (
@@ -342,47 +345,76 @@ def _make_compare_dp_excel(data: dict) -> bytes:
 async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_month: str) -> None:
     schema = schema_for(account_id)
     t0 = time.monotonic()
+
+    # Columns for COPY FROM STDIN (excludes autoincrement id and server-default created_at)
+    _COPY_COLS = (
+        "account_id", "pod", "mese_anno", "punto_dispacciamento",
+        "forecast_date", "source_date", "periodo",
+        "ea_kwh", "ea_kwh_with_loss", "loss_pct", "source_type",
+    )
+    copy_sql = f"COPY forecast_periods ({', '.join(_COPY_COLS)}) FROM STDIN"
+
+    # Convert SQLAlchemy URL scheme to plain psycopg3 conninfo.
+    conninfo = (
+        settings.DATABASE_URL
+        .replace("postgresql+psycopg://", "postgresql://")
+        .replace("postgres+psycopg://", "postgresql://")
+    )
+
     try:
-        # Drop the unique index before any writes: prevents per-row B-tree maintenance
-        # on a large table during bulk insert. Recreated after commit.
+        # Drop unique constraint before bulk insert to avoid per-row B-tree maintenance
+        # on the 21M-row table. Recreated after commit.
         async with get_session(schema) as ddl_session:
             await drop_forecast_unique_idx(ddl_session)
-        logger.info("Forecast %s: unique index dropped (%.2fs)", account_id, time.monotonic() - t0)
-
-        # Delete month in its own committed session.
-        async with get_session(schema) as del_session:
-            await delete_forecast_month(del_session, account_id, mese_anno)
+        logger.info("Forecast %s: unique constraint dropped (%.2fs)", account_id, time.monotonic() - t0)
 
         t1 = time.monotonic()
         n = 0
         got_any = False
-        # Read + write sessions open together for the full loop. No per-chunk commits —
-        # one transaction for all inserts so search_path stays stable and WAL overhead
-        # is minimised. Unique index is absent so inserts are fast.
-        async with get_session(schema) as read_session, \
-                   get_session(schema) as write_session:
-            _last_yield = time.monotonic()
-            async for chunk in generate_forecast_streaming(
-                read_session, account_id, mese_anno, ana_month
-            ):
-                got_any = True
-                _t_recv = time.monotonic()
-                _rows = await insert_forecast_chunk(write_session, chunk, account_id)
-                n += _rows
-                logger.info(
-                    "Forecast %s: gen=%.2fs insert=%.2fs rows=%d",
-                    account_id,
-                    _t_recv - _last_yield,
-                    time.monotonic() - _t_recv,
-                    _rows,
-                )
+
+        # Direct psycopg3 connection for writes: COPY FROM STDIN bypasses SQLAlchemy
+        # compilation (ORM INSERT re-compiled 25× per 144K-row chunk = ~71s; COPY ≈ 0.2s).
+        # DELETE + all COPY chunks run in a single transaction — rolled back atomically
+        # if the job fails mid-stream, preserving the previous month's forecast data.
+        async with await psycopg.AsyncConnection.connect(conninfo, autocommit=False) as write_conn:
+            await write_conn.execute(f"SET search_path TO {schema}, public")
+            await write_conn.execute(
+                "DELETE FROM forecast_periods WHERE account_id = %s AND mese_anno = %s",
+                (account_id, mese_anno),
+            )
+
+            async with get_session(schema) as read_session:
                 _last_yield = time.monotonic()
+                async for chunk in generate_forecast_streaming(
+                    read_session, account_id, mese_anno, ana_month
+                ):
+                    got_any = True
+                    _t_recv = time.monotonic()
+
+                    async with await write_conn.copy(copy_sql) as copy:
+                        for r in chunk:
+                            await copy.write_row((
+                                account_id, r.pod, r.mese_anno, r.punto_dispacciamento,
+                                r.forecast_date, r.source_date, r.periodo,
+                                r.ea_kwh, r.ea_kwh_with_loss, r.loss_pct, r.source_type,
+                            ))
+
+                    _rows = len(chunk)
+                    n += _rows
+                    logger.info(
+                        "Forecast %s: gen=%.2fs copy=%.2fs rows=%d",
+                        account_id,
+                        _t_recv - _last_yield,
+                        time.monotonic() - _t_recv,
+                        _rows,
+                    )
+                    _last_yield = time.monotonic()
 
             t2 = time.monotonic()
-            logger.info("TIMING generate+insert: %.1fs, rows=%d", t2 - t1, n)
+            logger.info("TIMING generate+copy: %.1fs, rows=%d", t2 - t1, n)
 
             if not got_any:
-                # Recreate index before returning error so schema stays consistent.
+                await write_conn.rollback()
                 async with get_session(schema) as ddl_session:
                     await create_forecast_unique_idx(ddl_session)
                 _jobs[job_id] = {
@@ -395,11 +427,12 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
                 }
                 return
 
-        # Recreate unique index after all rows are committed.
+            await write_conn.commit()
+
         t3 = time.monotonic()
         async with get_session(schema) as ddl_session:
             await create_forecast_unique_idx(ddl_session)
-        logger.info("Forecast %s: unique index recreated (%.2fs)", account_id, time.monotonic() - t3)
+        logger.info("Forecast %s: unique constraint recreated (%.2fs)", account_id, time.monotonic() - t3)
 
         logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
         _jobs[job_id] = {
@@ -414,7 +447,6 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
         }
     except Exception as exc:
         logger.exception("Forecast job %s failed", job_id)
-        # Always recreate the unique index so the schema stays consistent.
         try:
             async with get_session(schema) as ddl_session:
                 await create_forecast_unique_idx(ddl_session)
