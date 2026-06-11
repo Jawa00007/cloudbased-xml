@@ -38,7 +38,10 @@ from backend.api.schemas import (
     ForecastPeriodOut,
 )
 from backend.db.session import get_session
-from backend.db.upsert import delete_forecast_month, insert_forecast_chunk, upsert_forecast_periods
+from backend.db.upsert import (
+    delete_forecast_month, insert_forecast_chunk, upsert_forecast_periods,
+    drop_forecast_unique_idx, create_forecast_unique_idx,
+)
 from backend.forecast.engine import (
     compare_dispatching_points,
     compare_partial_month,
@@ -340,36 +343,37 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
     schema = schema_for(account_id)
     t0 = time.monotonic()
     try:
-        # Delete in its own session so the commit is immediate and isolated.
+        # Drop the unique index before any writes: prevents per-row B-tree maintenance
+        # on a large table during bulk insert. Recreated after commit.
+        async with get_session(schema) as ddl_session:
+            await drop_forecast_unique_idx(ddl_session)
+        logger.info("Forecast %s: unique index dropped (%.2fs)", account_id, time.monotonic() - t0)
+
+        # Delete month in its own committed session.
         async with get_session(schema) as del_session:
             await delete_forecast_month(del_session, account_id, mese_anno)
 
         t1 = time.monotonic()
         n = 0
         got_any = False
-        # Read session: stays open for the full generator, no mid-stream commits,
-        # so search_path stays stable across all source-data queries.
-        # Write session: ONE session for the entire write loop — no per-chunk
-        # open/commit/close overhead (69 commits → 1).  search_path stays stable
-        # because the connection is never released back to the pool mid-loop.
+        # Read + write sessions open together for the full loop. No per-chunk commits —
+        # one transaction for all inserts so search_path stays stable and WAL overhead
+        # is minimised. Unique index is absent so inserts are fast.
         async with get_session(schema) as read_session, \
                    get_session(schema) as write_session:
             async for chunk in generate_forecast_streaming(
                 read_session, account_id, mese_anno, ana_month
             ):
                 got_any = True
-                tw = time.monotonic()
-                rows_written = await insert_forecast_chunk(write_session, chunk, account_id)
-                n += rows_written
-                logger.info(
-                    "Forecast %s write chunk: rows=%d write=%.2fs",
-                    account_id, rows_written, time.monotonic() - tw,
-                )
+                n += await insert_forecast_chunk(write_session, chunk, account_id)
 
             t2 = time.monotonic()
-            logger.info("TIMING generate+stream_upsert: %.1fs, rows=%d", t2 - t1, n)
+            logger.info("TIMING generate+insert: %.1fs, rows=%d", t2 - t1, n)
 
             if not got_any:
+                # Recreate index before returning error so schema stays consistent.
+                async with get_session(schema) as ddl_session:
+                    await create_forecast_unique_idx(ddl_session)
                 _jobs[job_id] = {
                     "status": "error",
                     "result": None,
@@ -379,6 +383,12 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
                     ),
                 }
                 return
+
+        # Recreate unique index after all rows are committed.
+        t3 = time.monotonic()
+        async with get_session(schema) as ddl_session:
+            await create_forecast_unique_idx(ddl_session)
+        logger.info("Forecast %s: unique index recreated (%.2fs)", account_id, time.monotonic() - t3)
 
         logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
         _jobs[job_id] = {
@@ -393,6 +403,12 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
         }
     except Exception as exc:
         logger.exception("Forecast job %s failed", job_id)
+        # Always recreate the unique index so the schema stays consistent.
+        try:
+            async with get_session(schema) as ddl_session:
+                await create_forecast_unique_idx(ddl_session)
+        except Exception:
+            logger.exception("Failed to recreate forecast unique index for %s after error", schema)
         _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
 
 
@@ -429,18 +445,18 @@ async def run_generate_forecast(
     Poll GET /forecast/status/{job_id} every few seconds until status is 'done' or 'error'.
     """
     check_account_access(body.account_id, auth)
-    # Prevent two concurrent jobs for the same account + month — the second DELETE
-    # would race with the first job's inserts and produce an empty forecast.
+    # Block any concurrent job for the same account — the bulk-insert path drops and
+    # recreates the schema's unique index, so two simultaneous jobs would race on DDL.
     already_running = [
         j for j in _jobs.values()
         if j.get("status") == "running"
         and j.get("account_id") == body.account_id
-        and j.get("mese_anno") == body.mese_anno
     ]
     if already_running:
+        running_month = already_running[0].get("mese_anno", "?")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Forecast already running for {body.account_id} / {body.mese_anno}. Please wait.",
+            detail=f"Forecast already running for {body.account_id} / {running_month}. Please wait.",
         )
     job_id = start_forecast_job(body.account_id, body.mese_anno, body.anagrafica_mese_anno)
     return {"job_id": job_id, "status": "running"}
