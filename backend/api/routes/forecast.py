@@ -690,52 +690,70 @@ async def export_forecast_pods(
     check_account_access(account_id, auth)
     schema = schema_for(account_id)
     t0 = time.monotonic()
+
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet("Forecast PODs")
+    ws.append(["POD", "Source", "DAY"] + [str(p) for p in range(1, 97)])
+
+    cur_key: tuple | None = None
+    cur: dict = {}
+    row_count = 0
+    found_any = False
+
     async with get_session(schema) as session:
-        result = await session.execute(
+        stream = await session.stream(
             text("""
                 SELECT
                     fp.pod,
                     fp.forecast_date,
                     fp.periodo,
                     ROUND(fp.ea_kwh / 1000.0, 6) AS ea_mwh,
-                    fp.source_type,
-                    COALESCE(me.source_file, ms.source_file) AS source_file
+                    fp.source_type
                 FROM forecast_periods fp
-                LEFT JOIN measurements me
-                    ON me.account_id = fp.account_id
-                    AND me.pod = fp.pod
-                    AND me.data_misura = fp.source_date
-                    AND me.periodo = fp.periodo
-                    AND me.tipo_dato = 'E'
-                LEFT JOIN measurements_secondary ms
-                    ON ms.account_id = fp.account_id
-                    AND ms.pod = fp.pod
-                    AND ms.data_misura = fp.source_date
-                    AND ms.periodo = fp.periodo
-                    AND ms.tipo_dato = 'S'
-                    AND me.id IS NULL
                 WHERE fp.account_id = :acct AND fp.mese_anno = :ma
                 ORDER BY fp.pod, fp.forecast_date, fp.periodo
             """),
             {"acct": account_id, "ma": mese_anno},
         )
-        rows = [dict(r._mapping) for r in result.fetchall()]
-    logger.info("export/pods query: %.1fs, %d rows", time.monotonic() - t0, len(rows))
+        async for row in stream:
+            found_any = True
+            key = (row.pod, row.forecast_date)
+            if key != cur_key:
+                if cur_key is not None:
+                    day = cur_key[1].day
+                    ws.append(
+                        [cur_key[0], cur.get("src", ""), day]
+                        + [cur.get(p) for p in range(1, 97)]
+                    )
+                    row_count += 1
+                cur_key = key
+                cur = {"src": row.source_type or ""}
+            if row.ea_mwh is not None:
+                cur[row.periodo] = float(row.ea_mwh)
 
-    if not rows:
+        if cur_key is not None:
+            day = cur_key[1].day
+            ws.append(
+                [cur_key[0], cur.get("src", ""), day]
+                + [cur.get(p) for p in range(1, 97)]
+            )
+            row_count += 1
+
+    if not found_any:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
         )
 
-    t1 = time.monotonic()
-    xlsx = _make_forecast_pods_excel(rows)
-    logger.info("export/pods excel build: %.1fs, %.1fkB", time.monotonic() - t1, len(xlsx) / 1024)
+    logger.info("export/pods: %.1fs, %d rows", time.monotonic() - t0, row_count)
+
+    buf = io.BytesIO()
+    wb.save(buf)
     safe_month = mese_anno.replace("/", "-")
     filename = f"forecast_pods_{account_id.lower()}_{safe_month}.xlsx"
 
     return StreamingResponse(
-        io.BytesIO(xlsx),
+        io.BytesIO(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
@@ -752,10 +770,11 @@ async def get_measurement_months(account_id: str, auth: _Auth) -> list[str]:
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
-                SELECT DISTINCT mese_anno
+                SELECT TO_CHAR(DATE_TRUNC('month', data_misura), 'MM/YYYY') AS mese_anno
                 FROM measurements
                 WHERE account_id = :acct AND tipo_dato IN ('E', 'S')
-                ORDER BY mese_anno DESC
+                GROUP BY DATE_TRUNC('month', data_misura)
+                ORDER BY DATE_TRUNC('month', data_misura) DESC
             """),
             {"acct": account_id},
         )

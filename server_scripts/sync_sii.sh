@@ -128,10 +128,15 @@ for ACC in $ACCOUNTS; do
     [ $RSYNC_COUNT -eq 0 ] && continue
 
     mkdir -p $LOCAL_DATA/$ACC
-    rsync -az --files-from=$RSYNC_FILES \
+    rsync_out=$(rsync -az --files-from="$RSYNC_FILES" \
         -e "ssh $SSH_OPTS" \
         "${ITALIAN_HOST}:${ITALIAN_BASE}/${ACC}/" \
-        "$LOCAL_DATA/$ACC/" 2>&1 | tail -2
+        "$LOCAL_DATA/$ACC/" 2>&1)
+    rsync_exit=$?
+    echo "$rsync_out" | tail -5
+    if [ "$rsync_exit" -ne 0 ]; then
+        log "$ACC: WARNING — rsync exited $rsync_exit (partial transfer); missing files will retry next sync run"
+    fi
 
     log "$ACC: ingesting $RSYNC_COUNT files..."
     _API_KEY=$(grep '^API_KEY=' /opt/sii/.env | cut -d= -f2- | tr -d '\r\n' 2>/dev/null)

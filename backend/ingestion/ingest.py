@@ -240,6 +240,13 @@ async def process_file(account_id: str, entry: FileEntry, schema: str) -> None:
                 status="ok",
             )
 
+        except FileNotFoundError:
+            logger.warning(
+                "SKIP %s — ZIP not on disk at open time (rsync race); will retry next sync",
+                xml_name,
+            )
+            raise   # propagate without writing DB record
+
         except Exception as exc:
             logger.error("ERROR %s: %s", xml_name, exc)
             try:
@@ -337,6 +344,8 @@ async def ingest_account(
                 # DB commit succeeded → flow: sync→parse→validate→mark→delete
                 entry.zip_path.unlink(missing_ok=True)
                 return "ok"
+            except FileNotFoundError:
+                return "skip"  # WARNING already logged in process_file; no DB record
             except Exception as exc:
                 logger.error("Unhandled error on %s: %s", entry.xml_name, exc)
                 return "error"  # keep ZIP — will retry on next run

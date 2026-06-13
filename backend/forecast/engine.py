@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time as _time
 from dataclasses import dataclass
+from calendar import monthrange
 from datetime import date
 
 from sqlalchemy import text
@@ -152,15 +153,21 @@ async def _load_source_daily_batch(
     Returns {pod: {date: [(periodo, ea_kwh, source_type), ...]}}
     E preferred over S for any given (pod, date).
     """
+    mm, yyyy = source_mese_anno.split("/")
+    y, m = int(yyyy), int(mm)
+    start = date(y, m, 1)
+    end = date(y, m, monthrange(y, m)[1])
+
     result: dict[str, dict[date, list[tuple[int, float | None, str]]]] = {p: {} for p in pods}
     e_dates: dict[str, set[date]] = {p: set() for p in pods}
 
     e_rows = await session.execute(text("""
         SELECT pod, data_misura, periodo, ea_kwh
         FROM measurements
-        WHERE account_id = :acct AND pod = ANY(:pods) AND mese_anno = :ma AND tipo_dato = 'E'
+        WHERE account_id = :acct AND pod = ANY(:pods)
+          AND data_misura >= :start AND data_misura <= :end AND tipo_dato = 'E'
         ORDER BY pod, data_misura, periodo
-    """), {"acct": account_id, "pods": pods, "ma": source_mese_anno})
+    """), {"acct": account_id, "pods": pods, "start": start, "end": end})
     for r in e_rows.fetchall():
         pod, d, periodo, ea = r[0], r[1], r[2], r[3]
         e_dates[pod].add(d)
@@ -169,9 +176,10 @@ async def _load_source_daily_batch(
     s_rows = await session.execute(text("""
         SELECT pod, data_misura, periodo, ea_kwh
         FROM measurements_secondary
-        WHERE account_id = :acct AND pod = ANY(:pods) AND mese_anno = :ma
+        WHERE account_id = :acct AND pod = ANY(:pods)
+          AND data_misura >= :start AND data_misura <= :end
         ORDER BY pod, data_misura, periodo
-    """), {"acct": account_id, "pods": pods, "ma": source_mese_anno})
+    """), {"acct": account_id, "pods": pods, "start": start, "end": end})
     for r in s_rows.fetchall():
         pod, d, periodo, ea = r[0], r[1], r[2], r[3]
         if d not in e_dates[pod]:
