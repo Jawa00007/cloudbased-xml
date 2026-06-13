@@ -209,6 +209,13 @@ def parse_curve_file(
     Parse all <DatiPod> blocks in a curve-type XML file.
     A single file can contain multiple PODs — all are returned.
     """
+    # Some file types (e.g. SOS, S2G) put MeseAnno at the root level inside
+    # <IdentificativiFlusso> rather than inside each <DatiPod>. Extract it
+    # once here so extract_curve_records() can use it as a fallback before
+    # resorting to the filename-derived AAAAMM.
+    root_mese_anno = (root.findtext("IdentificativiFlusso/MeseAnno") or "").strip()
+    effective_fallback = root_mese_anno if root_mese_anno else mese_anno_fallback
+
     all_records: list[CurveRecord] = []
 
     dati_pod_elements = root.findall("DatiPod")
@@ -217,7 +224,7 @@ def parse_curve_file(
 
     for dati_pod in dati_pod_elements:
         all_records.extend(
-            extract_curve_records(dati_pod, mese_anno_fallback, source_file)
+            extract_curve_records(dati_pod, effective_fallback, source_file)
         )
 
     return all_records
