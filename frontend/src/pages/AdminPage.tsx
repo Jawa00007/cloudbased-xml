@@ -291,7 +291,7 @@ export default function AdminPage() {
   function monthOptions() {
     const opts: string[] = []
     const now = new Date()
-    for (let i = 0; i < 24; i++) {
+    for (let i = -3; i < 24; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
       const mm = String(d.getMonth() + 1).padStart(2, '0')
       opts.push(`${mm}/${d.getFullYear()}`)
