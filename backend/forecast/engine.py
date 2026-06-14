@@ -237,18 +237,28 @@ async def _resolve_source_month(
     end = date(y, m, monthrange(y, m)[1])
 
     row = await session.execute(
-        text("SELECT 1 FROM measurements WHERE account_id = :acct AND data_misura >= :s AND data_misura <= :e LIMIT 1"),
+        text("""
+            SELECT 1 FROM measurements
+            WHERE account_id = :acct AND data_misura >= :s AND data_misura <= :e
+            UNION ALL
+            SELECT 1 FROM measurements_secondary
+            WHERE account_id = :acct AND data_misura >= :s AND data_misura <= :e
+            LIMIT 1
+        """),
         {"acct": account_id, "s": start, "e": end},
     )
     if row.first() is not None:
         return target_source  # data exists — no fallback needed
 
-    # No data for the target month; find the nearest available month
+    # No data for the target month; find the nearest available month across both tables
     available = await session.execute(
         text("""
             SELECT DISTINCT DATE_TRUNC('month', data_misura)::date AS m
-            FROM measurements
-            WHERE account_id = :acct
+            FROM (
+                SELECT data_misura FROM measurements WHERE account_id = :acct
+                UNION ALL
+                SELECT data_misura FROM measurements_secondary WHERE account_id = :acct
+            ) combined
             ORDER BY m
         """),
         {"acct": account_id},

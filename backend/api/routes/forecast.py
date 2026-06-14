@@ -770,11 +770,15 @@ async def get_measurement_months(account_id: str, auth: _Auth) -> list[str]:
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
-                SELECT TO_CHAR(DATE_TRUNC('month', data_misura), 'MM/YYYY') AS mese_anno
-                FROM measurements
-                WHERE account_id = :acct AND tipo_dato IN ('E', 'S')
-                GROUP BY DATE_TRUNC('month', data_misura)
-                ORDER BY DATE_TRUNC('month', data_misura) DESC
+                SELECT TO_CHAR(m, 'MM/YYYY')
+                FROM (
+                    SELECT DISTINCT DATE_TRUNC('month', data_misura) AS m
+                    FROM measurements WHERE account_id = :acct
+                    UNION
+                    SELECT DISTINCT DATE_TRUNC('month', data_misura)
+                    FROM measurements_secondary WHERE account_id = :acct
+                ) combined
+                ORDER BY m DESC
             """),
             {"acct": account_id},
         )
