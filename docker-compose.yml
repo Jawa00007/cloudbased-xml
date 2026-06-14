@@ -2,6 +2,11 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
     command: >
       postgres
         -c shared_buffers=768MB
@@ -36,6 +41,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
     expose:
       - "8000"
     volumes:
@@ -65,6 +75,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
     expose:
       - "8000"
     volumes:
@@ -92,6 +107,11 @@ services:
   nginx:
     image: nginx:alpine
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     ports:
       - "80:80"
       - "443:443"
@@ -118,6 +138,11 @@ services:
   adminer:
     image: adminer:latest
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
     environment:
       ADMINER_DEFAULT_SERVER: db
       ADMINER_DESIGN: pepa-linha
