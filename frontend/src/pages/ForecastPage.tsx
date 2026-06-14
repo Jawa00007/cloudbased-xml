@@ -38,6 +38,18 @@ function firstOfMonth() {
   const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10)
 }
 
+function resolvedSourceMonth(forecastMonth: string, availableMonths: string[]): { month: string; fallback: boolean } {
+  const [mm, yy] = forecastMonth.split('/')
+  const target = `${mm}/${parseInt(yy) - 1}`
+  if (!availableMonths.length || availableMonths.includes(target)) return { month: target, fallback: false }
+  const toDate = (m: string) => { const [mo, yr] = m.split('/'); return new Date(parseInt(yr), parseInt(mo) - 1, 1) }
+  const targetDate = toDate(target)
+  const nearest = availableMonths.reduce((best, m) =>
+    Math.abs(toDate(m).getTime() - targetDate.getTime()) < Math.abs(toDate(best).getTime() - targetDate.getTime()) ? m : best
+  )
+  return { month: nearest, fallback: true }
+}
+
 
 // ── Generate Tab ──────────────────────────────────────────────────────────────
 function GenerateTab() {
@@ -226,7 +238,9 @@ function GenerateTab() {
               {monthOptions().map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <span className="text-[10px] text-slate-400 mt-0.5">
-              Source measurements: <span className="font-medium text-slate-500">{(() => { const [mm, yy] = meseAnno.split('/'); return `${mm}/${parseInt(yy) - 1}` })()} (auto)</span>
+              Source measurements: <span className={`font-medium ${resolvedSourceMonth(meseAnno, measurementMonths).fallback ? 'text-amber-500' : 'text-slate-500'}`}>
+                {resolvedSourceMonth(meseAnno, measurementMonths).month} (auto{resolvedSourceMonth(meseAnno, measurementMonths).fallback ? ', nearest' : ''})
+              </span>
             </span>
           </div>
           <div className="flex flex-col gap-1">

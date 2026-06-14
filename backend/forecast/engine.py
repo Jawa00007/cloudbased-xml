@@ -218,6 +218,59 @@ def _source_mese_anno(forecast_mese_anno: str) -> str:
     return f"{mm}/{int(yyyy) - 1}"
 
 
+async def _resolve_source_month(
+    session: AsyncSession,
+    account_id: str,
+    target_source: str,
+) -> str:
+    """
+    Return the nearest month that actually has measurement data.
+
+    Tries target_source first. If no rows exist for that month, queries all
+    available months (via data_misura date column) and returns the one closest
+    in calendar distance to target_source. Falls back to target_source itself
+    (CONSUMO_TOT path) only when the measurements table is empty.
+    """
+    mm, yyyy = target_source.split("/")
+    y, m = int(yyyy), int(mm)
+    start = date(y, m, 1)
+    end = date(y, m, monthrange(y, m)[1])
+
+    row = await session.execute(
+        text("SELECT 1 FROM measurements WHERE account_id = :acct AND data_misura >= :s AND data_misura <= :e LIMIT 1"),
+        {"acct": account_id, "s": start, "e": end},
+    )
+    if row.first() is not None:
+        return target_source  # data exists — no fallback needed
+
+    # No data for the target month; find the nearest available month
+    available = await session.execute(
+        text("""
+            SELECT DISTINCT DATE_TRUNC('month', data_misura)::date AS m
+            FROM measurements
+            WHERE account_id = :acct
+            ORDER BY m
+        """),
+        {"acct": account_id},
+    )
+    months = [r[0] for r in available.fetchall()]  # list of date(YYYY, MM, 1)
+    if not months:
+        log.warning(
+            "%s: no measurements at all — source month %s will fall back to CONSUMO_TOT",
+            account_id, target_source,
+        )
+        return target_source
+
+    target_date = date(y, m, 1)
+    nearest = min(months, key=lambda d: abs((d - target_date).days))
+    fallback = f"{nearest.month:02d}/{nearest.year}"
+    log.warning(
+        "%s: no data for source month %s — using nearest available %s",
+        account_id, target_source, fallback,
+    )
+    return fallback
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def generate_forecast_streaming(
@@ -236,7 +289,9 @@ async def generate_forecast_streaming(
     at once (~500 MB for CH4); now it only fetches 50 pods per iteration.
     """
     ana_month    = anagrafica_mese_anno or forecast_mese_anno
-    source_month = _source_mese_anno(forecast_mese_anno)
+    source_month = await _resolve_source_month(
+        session, account_id, _source_mese_anno(forecast_mese_anno)
+    )
     loss_rules   = await _load_loss_rules(session, account_id)
     ana_pods     = await _load_anagrafica_pods(session, account_id, ana_month)
 
@@ -352,7 +407,9 @@ async def generate_forecast(
     (regardless of POD count) to avoid per-POD round-trips.
     """
     ana_month    = anagrafica_mese_anno or forecast_mese_anno
-    source_month = _source_mese_anno(forecast_mese_anno)
+    source_month = await _resolve_source_month(
+        session, account_id, _source_mese_anno(forecast_mese_anno)
+    )
     loss_rules   = await _load_loss_rules(session, account_id)
     ana_pods     = await _load_anagrafica_pods(session, account_id, ana_month)
 
