@@ -128,9 +128,10 @@ def extract_curve_records(
         tensione = int(t_text) if t_text and t_text.strip().isdigit() else None
 
     # Misura block — all measurement fields live here
-    misura = dati_pod.find("Misura")
+    # SOS/S2G files use <Consumo> instead of <Misura> for the measurement block
+    misura = dati_pod.find("Misura") or dati_pod.find("Consumo")
     if misura is None:
-        # Flusso 2 annullamento (Motivazione=3) has no <Misura>; caller handles
+        # Flusso 2 annullamento (Motivazione=3) has no <Misura> or <Consumo>; caller handles
         return []
 
     # TipoDato is absent in Flusso 2 correction files — default to None
