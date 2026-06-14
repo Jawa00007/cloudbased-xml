@@ -162,10 +162,10 @@ except: print('yes')
         # API lock held by another sync — skip this account, retry next cron run
         log "$ACC: API busy (409) — another sync is running, skipping until next cron run"
     else
-        # API unavailable (down, 500, timeout) — fall back to docker exec
-        log "$ACC: API returned HTTP $_HTTP, falling back to docker exec"
-        docker exec sii-api-1 python -m backend.ingestion.ingest \
-            --account=$ACC 2>&1 | tail -3
+        # API unavailable (5xx, timeout) — skip, retry next cron run.
+        # Never fall back to docker exec: it bypasses the ingestion guard,
+        # has no BATCH_SIZE limit, and blocks all subsequent cron slots for hours.
+        log "$ACC: API returned HTTP $_HTTP — skipping, will retry next cron run"
     fi
     log "$ACC: done"
 done
