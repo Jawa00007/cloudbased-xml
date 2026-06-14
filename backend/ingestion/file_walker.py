@@ -83,7 +83,7 @@ def _iter_date_folder(date_folder: Path) -> Iterator[Path]:
     """
     for entry in sorted(date_folder.iterdir()):
         n = entry.name.lower()
-        if n.endswith(".xml.zip") or (n.endswith(".zip") and ".xml" in n):
+        if n.endswith(".zip"):
             yield entry
         elif n.endswith(".xml") and not entry.is_dir():
             # Bare XML (not inside a ZIP) — treat zip_path == file itself,
@@ -120,14 +120,15 @@ def walk_account(account_root: Path, account_id: str) -> Iterator[FileEntry]:
                     continue
 
                 for zip_path in _iter_date_folder(date_dir):
-                    # For .xml.zip files: stem strips the last ".zip" suffix,
-                    # giving "filename.xml" — the entry name inside the archive.
-                    # For bare .xml files: stem gives "filename" so we use .name.
-                    xml_name = (
-                        zip_path.stem
-                        if zip_path.name.lower().endswith(".zip")
-                        else zip_path.name
-                    )
+                    # For .xml.zip: stem gives "foo.xml" — correct.
+                    # For plain .zip (S2G, SOS, SOF): stem gives "foo" — append ".xml"
+                    # so parse_filename() and deduplication keys are consistent.
+                    # For bare .xml files: use file.name directly.
+                    if zip_path.name.lower().endswith(".zip"):
+                        stem = zip_path.stem
+                        xml_name = stem if stem.lower().endswith(".xml") else stem + ".xml"
+                    else:
+                        xml_name = zip_path.name
                     yield FileEntry(
                         account_id=account_id,
                         subfolder=meta,
@@ -160,8 +161,7 @@ def count_account_files(account_root: Path) -> int:
                 count += sum(
                     1 for e in date_dir.iterdir()
                     if not e.is_dir() and (
-                        e.name.lower().endswith(".xml.zip")
-                        or (e.name.lower().endswith(".zip") and ".xml" in e.name.lower())
+                        e.name.lower().endswith(".zip")
                         or e.name.lower().endswith(".xml")
                     )
                 )
