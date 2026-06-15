@@ -816,8 +816,13 @@ async def export_measurements_wide(
                 FROM measurements
                 WHERE account_id = :acct
                   AND data_misura >= :start AND data_misura <= :end
-                  AND tipo_dato IN ('E', 'S')
-                ORDER BY pod, data_misura, tipo_dato DESC, periodo
+                  AND tipo_dato = 'E'
+                UNION ALL
+                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato
+                FROM measurements_secondary
+                WHERE account_id = :acct
+                  AND data_misura >= :start AND data_misura <= :end
+                ORDER BY pod, data_misura, tipo_dato ASC, periodo
             """),
             {"acct": account_id, "start": start, "end": end},
         )
