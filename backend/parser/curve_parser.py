@@ -172,6 +172,12 @@ def extract_curve_records(
 
         dst = int(ea_el.get("Dst", "0"))
 
+        # Skip days where the distributor sent an empty Ea (0 E-attributes) — this
+        # means "no measurement available for this POD/day" and is not an error.
+        period_count = sum(1 for k in ea_el.attrib if k.startswith("E") and k[1:].isdigit())
+        if period_count == 0:
+            continue
+
         try:
             _validate_periods(ea_el, dst)
             data_misura = _parse_date(day_str, mese_anno)
