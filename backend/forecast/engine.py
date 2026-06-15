@@ -374,6 +374,7 @@ async def generate_forecast_streaming(
                 source_daily=source_daily,
                 consumo_tot=consumo_tot,
                 dispatching_weights=weights,
+                source_mese_anno=source_month,
             )
 
             for fp in filled:
@@ -481,6 +482,7 @@ async def generate_forecast(
             source_daily=source_daily,
             consumo_tot=consumo_tot,
             dispatching_weights=weights,
+            source_mese_anno=source_month,
         )
 
         for fp in filled:

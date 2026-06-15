@@ -45,6 +45,7 @@ def build_forecast_month(
     source_daily: dict[date, list[tuple[int, float | None, str]]],
     consumo_tot: float | None,
     dispatching_weights: list[float] | None,
+    source_mese_anno: str | None = None,
 ) -> list[FilledPeriod]:
     """
     Produce a complete 31-slot × 96-period forecast for one POD in one month.
@@ -52,10 +53,15 @@ def build_forecast_month(
     Args:
         forecast_mese_anno:  Target month, e.g. "05/2026".
         source_daily:        {source_date: [(periodo, ea_kwh, source_type), ...]}
-                             from the previous year (e.g. May 2025 data).
+                             from the source month (usually same month one year prior,
+                             but may be a fallback month when that year's data is absent).
                              Missing = days without measurement data.
         consumo_tot:         Annual kWh total from ANAGRAFICA. Used for Case 3.
         dispatching_weights: 96 floats summing to 1.0. Uniform if None.
+        source_mese_anno:    The actual month the source_daily data comes from,
+                             e.g. "09/2025". When None, defaults to same month one year
+                             prior (legacy behaviour). Required for correct day-alignment
+                             when the resolved source month differs from forecast-year-minus-1.
 
     Returns:
         List of FilledPeriod — days_in_month × 96 rows (e.g. 30×96=2 880 for April).
@@ -66,6 +72,13 @@ def build_forecast_month(
     mm, yyyy = forecast_mese_anno.split("/")
     month = int(mm)
     year  = int(yyyy)
+
+    # Determine source year/month for day-aligned lookup
+    if source_mese_anno:
+        mm_src, yyyy_src = source_mese_anno.split("/")
+        src_month, src_year = int(mm_src), int(yyyy_src)
+    else:
+        src_month, src_year = month, year - 1
 
     weights = dispatching_weights if dispatching_weights else _uniform_weights()
 
@@ -88,11 +101,11 @@ def build_forecast_month(
         except ValueError:
             continue  # day_num beyond month end — skip rather than reuse last day
 
-        # Determine the corresponding source date (same day in previous year)
+        # Determine the corresponding source date (same day number in source month)
         try:
-            source_date_target: date | None = date(year - 1, month, day_num)
+            source_date_target: date | None = date(src_year, src_month, day_num)
         except ValueError:
-            source_date_target = None  # e.g. Feb 29 in non-leap source year
+            source_date_target = None  # day_num beyond source month end (e.g. day 31 in June)
 
         # --- Pick source periods ---
         periods_for_day: list[tuple[int, float | None, str]] | None = None
