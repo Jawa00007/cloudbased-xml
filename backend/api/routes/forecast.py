@@ -20,6 +20,7 @@ import io
 import logging
 import time
 import uuid
+from calendar import monthrange
 from datetime import date
 from typing import Annotated, Any
 
@@ -804,16 +805,21 @@ async def export_measurements_wide(
     check_account_access(account_id, auth)
     schema = schema_for(account_id)
     t0 = time.monotonic()
+    mm, yyyy = mese_anno.split("/")
+    y, m_int = int(yyyy), int(mm)
+    start = date(y, m_int, 1)
+    end   = date(y, m_int, monthrange(y, m_int)[1])
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
                 SELECT pod, data_misura, periodo, ea_kwh, tipo_dato
                 FROM measurements
-                WHERE account_id = :acct AND mese_anno = :ma
+                WHERE account_id = :acct
+                  AND data_misura >= :start AND data_misura <= :end
                   AND tipo_dato IN ('E', 'S')
                 ORDER BY pod, data_misura, tipo_dato DESC, periodo
             """),
-            {"acct": account_id, "ma": mese_anno},
+            {"acct": account_id, "start": start, "end": end},
         )
         rows = [dict(r._mapping) for r in result.fetchall()]
     logger.info("export/measurements query: %.1fs, %d rows", time.monotonic() - t0, len(rows))
