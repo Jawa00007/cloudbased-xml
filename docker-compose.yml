@@ -67,7 +67,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4g
+          memory: 6g
           cpus: "2.0"
 
   # Hot-standby replica — nginx routes here only when api is unhealthy/down

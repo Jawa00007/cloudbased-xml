@@ -77,7 +77,9 @@ ACCOUNT_SCHEMA_MAP: dict[str, str] = {
 }
 
 # Concurrency controls
-_CONCURRENCY = 5    # files processed simultaneously (bounded by DB pool_size=10)
+# Kept at 2 rather than 5: large S2G/SOS files load ~500 MB each; 5 concurrent
+# would exhaust the 6 GB container limit and trigger OOM kills.
+_CONCURRENCY = 2
 _CHUNK_SIZE = 100   # max FileEntry objects held in memory at once
 
 
@@ -135,13 +137,19 @@ async def process_file(account_id: str, entry: FileEntry, schema: str) -> None:
 
     async with get_session(schema) as session:
         try:
-            # Read ZIP in-memory — no extraction to disk
+            # Run blocking I/O + XML parsing in thread pool to keep event loop free
+            # (health checks and other requests remain responsive during large-file ingestion)
+            loop = asyncio.get_event_loop()
             if zip_path.name.lower().endswith(".zip"):
-                xml_bytes = _read_xml_from_zip(zip_path, xml_name)
-                result = route_file(xml_bytes=xml_bytes, file_name=xml_name)
+                xml_bytes = await loop.run_in_executor(
+                    None, _read_xml_from_zip, zip_path, xml_name
+                )
+                result = await loop.run_in_executor(
+                    None, lambda: route_file(xml_bytes=xml_bytes, file_name=xml_name)
+                )
             else:
                 # Bare .xml file (rare, legacy)
-                result = route_file(zip_path)
+                result = await loop.run_in_executor(None, route_file, zip_path)
 
             meta = result.filename_meta
 
