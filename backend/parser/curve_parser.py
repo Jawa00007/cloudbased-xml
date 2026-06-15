@@ -115,9 +115,6 @@ def extract_curve_records(
     if not pod:
         raise ValueError(f"Missing <Pod> in DatiPod block in {source_file!r}")
 
-    # MeseAnno from XML takes priority over filename-derived value
-    mese_anno = (dati_pod.findtext("MeseAnno") or mese_anno_fallback).strip()
-
     # DatiPdp block
     dati_pdp = dati_pod.find("DatiPdp")
     trattamento: str | None = None
@@ -133,6 +130,15 @@ def extract_curve_records(
     if misura is None:
         # Flusso 2 annullamento (Motivazione=3) has no <Misura> or <Consumo>; caller handles
         return []
+
+    # MeseAnno: check DatiPod direct child first, then inside Misura/Consumo (S2G/SOS
+    # files carry <MeseAnno> inside <Consumo>, not as a direct <DatiPod> child), then
+    # fall back to the filename AAAAMM.
+    mese_anno = (
+        dati_pod.findtext("MeseAnno")
+        or misura.findtext("MeseAnno")
+        or mese_anno_fallback
+    ).strip()
 
     # TipoDato is absent in Flusso 2 correction files — default to None
     tipo_dato = (misura.findtext("TipoDato") or "").strip() or None

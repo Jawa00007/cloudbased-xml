@@ -255,7 +255,7 @@ def _make_measurements_wide_excel(rows: list[dict]) -> bytes:
         existing = pivot.get(key)
         # E takes priority over S
         if existing is None or (r["tipo_dato"] == "E" and existing.get("tipo_dato") != "E"):
-            pivot[key] = {"tipo_dato": r["tipo_dato"]}
+            pivot[key] = {"tipo_dato": r["tipo_dato"], "cod_flusso": r.get("cod_flusso", "")}
         elif existing.get("tipo_dato") == "E" and r["tipo_dato"] != "E":
             continue  # skip S when E already present
         val = r["ea_kwh"]
@@ -265,12 +265,12 @@ def _make_measurements_wide_excel(rows: list[dict]) -> bytes:
 
     wb = openpyxl.Workbook(write_only=True)
     ws = wb.create_sheet("Measurements")
-    ws.append(["POD", "TipoDato", "DAY"] + [str(p) for p in range(1, 97)])
+    ws.append(["POD", "CodFlusso", "TipoDato", "DAY"] + [str(p) for p in range(1, 97)])
 
     for (pod, date_str) in sorted(pivot.keys()):
         entry = pivot[(pod, date_str)]
         day = int(date_str.split("-")[2]) if date_str and "-" in date_str else ""
-        ws.append([pod, entry.get("tipo_dato", ""), day] + [entry.get(p) for p in range(1, 97)])
+        ws.append([pod, entry.get("cod_flusso", ""), entry.get("tipo_dato", ""), day] + [entry.get(p) for p in range(1, 97)])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -812,13 +812,13 @@ async def export_measurements_wide(
     async with get_session(schema) as session:
         result = await session.execute(
             text("""
-                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato
+                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato, cod_flusso
                 FROM measurements
                 WHERE account_id = :acct
                   AND data_misura >= :start AND data_misura <= :end
                   AND tipo_dato = 'E'
                 UNION ALL
-                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato
+                SELECT pod, data_misura, periodo, ea_kwh, tipo_dato, cod_flusso
                 FROM measurements_secondary
                 WHERE account_id = :acct
                   AND data_misura >= :start AND data_misura <= :end
