@@ -3,6 +3,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env.staging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
     expose:
       - "8000"
     volumes:
