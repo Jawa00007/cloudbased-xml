@@ -13,6 +13,11 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.0
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -33,6 +38,11 @@ services:
   grafana:
     image: grafana/grafana:11.3.0
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-change_me_before_deploy}
       GF_SERVER_ROOT_URL: https://forecast.dinamoservice.it/grafana/
