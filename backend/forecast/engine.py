@@ -188,6 +188,78 @@ async def _load_source_daily_batch(
     return result
 
 
+async def _load_secondary_s2g_fallback(
+    session: AsyncSession,
+    account_id: str,
+    pods: list[str],
+    target_month: str,
+    valid_flows: frozenset[str] = frozenset({"S2G", "SOS"}),
+) -> dict[str, dict[date, list[tuple[int, float | None, str]]]]:
+    """
+    For pods with no E/S data in the target source month, find the nearest available
+    month's S2G or SOS readings in measurements_secondary.
+    These flows carry actual meter readings despite the S tipo_dato label — the
+    distributor marks them estimated because they are historical batch data, not
+    live supply readings.
+    """
+    if not pods:
+        return {}
+
+    month_rows = await session.execute(text("""
+        SELECT pod, DATE_TRUNC('month', data_misura)::date AS m
+        FROM measurements_secondary
+        WHERE account_id = :acct
+          AND pod = ANY(:pods)
+          AND cod_flusso = ANY(:flows)
+        GROUP BY pod, DATE_TRUNC('month', data_misura)
+        ORDER BY pod, m
+    """), {"acct": account_id, "pods": pods, "flows": list(valid_flows)})
+
+    mm, yyyy = target_month.split("/")
+    target_date = date(int(yyyy), int(mm), 1)
+
+    pod_best_month: dict[str, date] = {}
+    for row in month_rows.fetchall():
+        pod, m = row[0], row[1]
+        if pod not in pod_best_month or \
+                abs((m - target_date).days) < abs((pod_best_month[pod] - target_date).days):
+            pod_best_month[pod] = m
+
+    if not pod_best_month:
+        return {}
+
+    result: dict[str, dict[date, list[tuple[int, float | None, str]]]] = {}
+    month_to_pods: dict[date, list[str]] = {}
+    for pod, best_m in pod_best_month.items():
+        month_to_pods.setdefault(best_m, []).append(pod)
+
+    for best_m, month_pods in month_to_pods.items():
+        end_m = date(best_m.year, best_m.month, monthrange(best_m.year, best_m.month)[1])
+        rows = await session.execute(text("""
+            SELECT pod, data_misura, periodo, ea_kwh
+            FROM measurements_secondary
+            WHERE account_id = :acct
+              AND pod = ANY(:pods)
+              AND data_misura >= :start AND data_misura <= :end
+              AND cod_flusso = ANY(:flows)
+            ORDER BY pod, data_misura, periodo
+        """), {
+            "acct": account_id, "pods": month_pods,
+            "start": best_m, "end": end_m, "flows": list(valid_flows),
+        })
+        for r in rows.fetchall():
+            pod, d, periodo, ea = r[0], r[1], r[2], r[3]
+            result.setdefault(pod, {}).setdefault(d, []).append(
+                (periodo, float(ea) if ea is not None else None, "S")
+            )
+
+    log.info(
+        "%s: S2G/SOS secondary fallback applied to %d/%d empty pods",
+        account_id, len(result), len(pods),
+    )
+    return result
+
+
 async def _load_anagrafica_pods(
     session: AsyncSession,
     account_id: str,
@@ -453,6 +525,11 @@ async def generate_forecast(
     pod_meta_map    = await _load_pod_metadata_batch(session, account_id, pods)
     dispatch_map    = await _load_dispatching_weights_batch(session, account_id, puntos)
     source_daily_map = await _load_source_daily_batch(session, account_id, pods, source_month)
+
+    empty_pods = [p for p in pods if not source_daily_map.get(p)]
+    if empty_pods:
+        fallback = await _load_secondary_s2g_fallback(session, account_id, empty_pods, source_month)
+        source_daily_map.update(fallback)
 
     all_rows: list[ForecastRow] = []
 
