@@ -382,28 +382,34 @@ async def upsert_anagrafica(
         for r in records
     ]
 
-    stmt = (
-        insert(table)
-        .values(rows)
-        .on_conflict_do_update(
-            constraint="uq_anagrafica_key",
-            set_={
-                "piva_utente": insert(table).excluded.piva_utente,
-                "piva_distributore": insert(table).excluded.piva_distributore,
-                "pod_raw": insert(table).excluded.pod_raw,
-                "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
-                "tipo_misuratore": insert(table).excluded.tipo_misuratore,
-                "trattamento": insert(table).excluded.trattamento,
-                "tensione": insert(table).excluded.tensione,
-                "codice_tariffa": insert(table).excluded.codice_tariffa,
-                "consumo_tot": insert(table).excluded.consumo_tot,
-                "included": insert(table).excluded.included,
-                "source_file": insert(table).excluded.source_file,
-            },
-        )
-    )
+    # 14 columns per row; psycopg3 limit is 65535 params → max 4681 rows per statement
+    _ANA_CHUNK = 4_500
 
-    await session.execute(stmt)
+    def _make_stmt(chunk: list[dict]):
+        return (
+            insert(table)
+            .values(chunk)
+            .on_conflict_do_update(
+                constraint="uq_anagrafica_key",
+                set_={
+                    "piva_utente": insert(table).excluded.piva_utente,
+                    "piva_distributore": insert(table).excluded.piva_distributore,
+                    "pod_raw": insert(table).excluded.pod_raw,
+                    "punto_dispacciamento": insert(table).excluded.punto_dispacciamento,
+                    "tipo_misuratore": insert(table).excluded.tipo_misuratore,
+                    "trattamento": insert(table).excluded.trattamento,
+                    "tensione": insert(table).excluded.tensione,
+                    "codice_tariffa": insert(table).excluded.codice_tariffa,
+                    "consumo_tot": insert(table).excluded.consumo_tot,
+                    "included": insert(table).excluded.included,
+                    "source_file": insert(table).excluded.source_file,
+                },
+            )
+        )
+
+    for i in range(0, len(rows), _ANA_CHUNK):
+        await session.execute(_make_stmt(rows[i : i + _ANA_CHUNK]))
+
     return len(records)   # rowcount is unreliable for batch ON CONFLICT upserts
 
 
@@ -424,10 +430,11 @@ async def drop_forecast_unique_idx(session: AsyncSession) -> None:
 
 
 async def create_forecast_unique_idx(session: AsyncSession) -> None:
-    """Recreate the unique constraint on forecast_periods after a bulk insert."""
+    """Recreate the unique index on forecast_periods after a bulk insert.
+    Uses CREATE UNIQUE INDEX IF NOT EXISTS to tolerate concurrent forecast jobs."""
     await session.execute(text(
-        "ALTER TABLE forecast_periods ADD CONSTRAINT uq_forecast_period_key "
-        "UNIQUE (account_id, pod, forecast_date, periodo)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_period_key "
+        "ON forecast_periods (account_id, pod, forecast_date, periodo)"
     ))
 
 
