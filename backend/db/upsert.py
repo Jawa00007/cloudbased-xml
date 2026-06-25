@@ -422,22 +422,30 @@ _CHUNK = 5_900
 
 async def drop_forecast_unique_idx(session: AsyncSession) -> None:
     """Drop the unique constraint/index on forecast_periods before a bulk insert.
-    Handles both the legacy named CONSTRAINT form and the newer standalone INDEX form."""
+    All operations are schema-qualified via current_schema() to avoid touching
+    the public.forecast_periods constraint that shares the same index name."""
     await session.execute(text("""
         DO $$ BEGIN
+            -- Drop named constraint (also drops its backing index)
             ALTER TABLE forecast_periods DROP CONSTRAINT IF EXISTS uq_forecast_period_key;
+            -- Drop standalone index that may exist from a previous run of the new code
+            EXECUTE format('DROP INDEX IF EXISTS %I.uq_forecast_period_key', current_schema());
         EXCEPTION WHEN OTHERS THEN NULL; END $$
     """))
-    await session.execute(text("DROP INDEX IF EXISTS uq_forecast_period_key"))
 
 
 async def create_forecast_unique_idx(session: AsyncSession) -> None:
     """Recreate the unique index on forecast_periods after a bulk insert.
-    Uses CREATE UNIQUE INDEX IF NOT EXISTS to tolerate concurrent forecast jobs."""
-    await session.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_period_key "
-        "ON forecast_periods (account_id, pod, forecast_date, periodo)"
-    ))
+    Schema-qualified so it always lands in the current account schema."""
+    await session.execute(text("""
+        DO $$ BEGIN
+            EXECUTE format(
+                'CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_period_key '
+                'ON %I.forecast_periods (account_id, pod, forecast_date, periodo)',
+                current_schema()
+            );
+        EXCEPTION WHEN OTHERS THEN NULL; END $$
+    """))
 
 
 async def delete_forecast_month(
