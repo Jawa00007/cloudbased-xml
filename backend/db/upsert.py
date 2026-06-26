@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete, func, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,6 +106,7 @@ async def upsert_curve_records(
     rows = list(seen.values())
 
     def _make_stmt(chunk: list[dict]):
+        exc = insert(table).excluded
         return (
             insert(table)
             .values(chunk)
@@ -115,23 +116,34 @@ async def upsert_curve_records(
                 # uq_bat_measurements_key) which differs from the model's name.
                 index_elements=["account_id", "pod", "data_misura", "periodo", "tipo_dato"],
                 set_={
-                    "ea_kwh": insert(table).excluded.ea_kwh,
-                    "er_kvarh": insert(table).excluded.er_kvarh,
-                    "dst": insert(table).excluded.dst,
-                    "raccolta": insert(table).excluded.raccolta,
-                    "validato": insert(table).excluded.validato,
-                    "pot_max": insert(table).excluded.pot_max,
-                    "causa_ostativa": insert(table).excluded.causa_ostativa,
-                    "cod_flusso": insert(table).excluded.cod_flusso,
-                    "file_timestamp": insert(table).excluded.file_timestamp,
-                    "progressivo": insert(table).excluded.progressivo,
-                    "source_file": insert(table).excluded.source_file,
+                    # COALESCE: never overwrite a real value with NULL.
+                    # Switching/voltura days split 96 periods across two files (R + NR)
+                    # with complementary ranges; the newer file's NULLs must not erase
+                    # the older file's measured periods.
+                    "ea_kwh": func.coalesce(exc.ea_kwh, table.c.ea_kwh),
+                    "er_kvarh": func.coalesce(exc.er_kvarh, table.c.er_kvarh),
+                    "dst": exc.dst,
+                    "raccolta": exc.raccolta,
+                    "validato": exc.validato,
+                    "pot_max": exc.pot_max,
+                    "causa_ostativa": exc.causa_ostativa,
+                    "cod_flusso": exc.cod_flusso,
+                    "file_timestamp": exc.file_timestamp,
+                    "progressivo": exc.progressivo,
+                    "source_file": exc.source_file,
                 },
                 where=(
-                    (insert(table).excluded.file_timestamp > table.c.file_timestamp)
+                    (exc.file_timestamp > table.c.file_timestamp)
                     | (
-                        (insert(table).excluded.file_timestamp == table.c.file_timestamp)
-                        & (insert(table).excluded.progressivo > table.c.progressivo)
+                        (exc.file_timestamp == table.c.file_timestamp)
+                        & (exc.progressivo > table.c.progressivo)
+                    )
+                    # Also allow filling in a NULL period from ANY file that has a
+                    # real value — handles the complementary R+NR switching-day case
+                    # where the older file covers periods the newer file left as NULL.
+                    | (
+                        exc.ea_kwh.isnot(None)
+                        & table.c.ea_kwh.is_(None)
                     )
                 ),
             )
