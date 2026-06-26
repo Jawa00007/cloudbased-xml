@@ -107,16 +107,6 @@ async def delete_stale_data(
         account_id, cutoff, total,
         {k: v for k, v in deleted.items() if v > 0},
     )
-
-    # VACUUM ANALYZE on tables that had deletions — marks dead tuples reusable,
-    # updates planner statistics. No lock; runs outside the transaction.
-    if total > 0:
-        await session.commit()
-        for table in ("measurements", "measurements_secondary",
-                      "measurements_totalizer", "corrections", "forecast_periods"):
-            if deleted.get(table, 0) > 0:
-                await session.execute(text(f"VACUUM (ANALYZE) {table}"))
-
     return deleted
 
 
