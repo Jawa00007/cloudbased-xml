@@ -19,7 +19,7 @@ import asyncio
 
 from backend.api.auth import Auth, require_admin, require_auth
 from backend.core.config import settings
-from backend.db.retention import retention_cutoff, run_monthly_retention
+from backend.db.retention import retention_cutoff, run_monthly_retention, run_retention_for_account
 from backend.api.routes.forecast import start_forecast_job
 from backend.api.schemas import (
     AnagraficaOut,
@@ -507,17 +507,37 @@ async def delete_dispatching_config(
 
 # ── Data retention ────────────────────────────────────────────────────────────
 
+class _RetentionRunRequest(BaseModel):
+    account_id: str | None = None
+
+
 @router.post(
     "/retention/run",
     summary="Trigger rolling 12-month data retention purge immediately (admin only)",
 )
-async def trigger_retention(auth: _AdminAuth) -> dict:
+async def trigger_retention(body: _RetentionRunRequest, auth: _AdminAuth) -> dict:
     """
-    Runs the same logic as the monthly scheduler job (1st of each month at 03:00).
-    Returns immediately; purge runs in the background.
+    Runs the retention purge in the background.
+
+    - If account_id is given, deletes only that account (faster, targeted).
+    - If omitted, runs all active accounts sequentially.
     """
-    asyncio.create_task(run_monthly_retention())
-    return {"status": "started", "cutoff": str(retention_cutoff())}
+    cutoff = retention_cutoff()
+    if body.account_id:
+        account_id = body.account_id.upper()
+        async with get_public_session() as pub:
+            row = (await pub.execute(
+                text("SELECT schema_name FROM public.accounts WHERE account_id = :a AND active = true"),
+                {"a": account_id},
+            )).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Account {account_id} not found or inactive")
+        schema_name = row[0]
+        asyncio.create_task(run_retention_for_account(account_id, schema_name))
+        return {"status": "started", "account_id": account_id, "cutoff": str(cutoff)}
+    else:
+        asyncio.create_task(run_monthly_retention())
+        return {"status": "started", "account_id": "all", "cutoff": str(cutoff)}
 
 
 @router.get(

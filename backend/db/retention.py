@@ -1,16 +1,12 @@
-"""Narrow data retention: keep current year + same-month-last-year rolling window.
+"""Rolling 12-month data retention.
 
-Retention rule (retention_policy):
-  hard_cutoff = date(today.year, 1, 1)          e.g. 2026-01-01
-  keep_start  = date(today.year-1, today.month, 1)   e.g. 2025-05-01
-  keep_end    = first day of next month last year     e.g. 2025-06-01
+Rule: keep the last 12 full months of data.
 
-  DELETE WHERE data_misura < keep_start
-           OR (data_misura >= keep_end AND data_misura < hard_cutoff)
+  cutoff = first day of (current month − 11 months)
 
-Example (2026-05-23):
-  keep May 2025 + all 2026 data; delete Jun–Dec 2025 and earlier.
-  On June 1 2026: keep June 2025 + all 2026; delete May 2025.
+Examples:
+  June 15 2026  → cutoff 2025-07-01 → delete mese_anno ≤ 06/2025, keep ≥ 07/2025
+  July 15 2026  → cutoff 2025-08-01 → delete mese_anno ≤ 07/2025, keep ≥ 08/2025
 
 Tables NOT pruned: pod_metadata, anagrafica, loss_config, dispatching_config
 (reference/config data needed for forecasting regardless of age).
@@ -28,71 +24,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 
-def retention_policy() -> tuple[date, date, date]:
-    """Return (hard_cutoff, keep_start, keep_end) for the narrow retention window.
+def retention_cutoff() -> date:
+    """Return the oldest date to keep (inclusive).
 
-    hard_cutoff: first day of current year (e.g. 2026-01-01)
-    keep_start:  first day of same month last year (e.g. 2025-05-01)
-    keep_end:    first day of next month last year (e.g. 2025-06-01)
-
-    Rows to delete: data_misura < keep_start
-                 OR (data_misura >= keep_end AND data_misura < hard_cutoff)
+    Deletes everything with data_misura < this date.
+    On June 15 2026 returns 2025-07-01; on July 15 2026 returns 2025-08-01.
     """
     today = date.today()
-    hard_cutoff = date(today.year, 1, 1)
-    keep_start = date(today.year - 1, today.month, 1)
-    if today.month == 12:
-        keep_end = date(today.year, 1, 1)  # same as hard_cutoff
-    else:
-        keep_end = date(today.year - 1, today.month + 1, 1)
-    return hard_cutoff, keep_start, keep_end
-
-
-def retention_cutoff() -> date:
-    """Return keep_start from retention_policy() — the oldest date we keep.
-
-    Kept for backward compatibility with admin endpoints that pass a single cutoff.
-    """
-    _, keep_start, _ = retention_policy()
-    return keep_start
+    month = today.month - 11
+    year = today.year
+    if month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1)
 
 
 async def delete_stale_data(
     session: AsyncSession,
     account_id: str,
     cutoff: date | None = None,
-    *,
-    policy: tuple[date, date, date] | None = None,
 ) -> dict[str, int]:
-    """Delete measurement data outside the retention window for one account schema.
-
-    When policy=(hard_cutoff, keep_start, keep_end) is given, uses narrow retention:
-      DELETE WHERE data_misura < keep_start
-               OR (data_misura >= keep_end AND data_misura < hard_cutoff)
-
-    When only cutoff is given (legacy), deletes WHERE data_misura < cutoff.
+    """Delete measurement data older than cutoff for one account schema.
 
     The session must already be scoped to the correct account schema (via get_session()).
     Returns {table_name: rows_deleted}.
     """
-    if policy is None:
-        policy = retention_policy()
-
-    hard_cutoff, keep_start, keep_end = policy
+    if cutoff is None:
+        cutoff = retention_cutoff()
 
     deleted: dict[str, int] = {}
 
     # Curve measurement tables — data_misura is a DATE column with an index
     for table in ("measurements", "measurements_secondary"):
         result = await session.execute(
-            text(f"""
-                DELETE FROM {table}
-                WHERE account_id = :acct
-                  AND (data_misura < :keep_start
-                       OR (data_misura >= :keep_end AND data_misura < :hard_cutoff))
-            """),
-            {"acct": account_id, "keep_start": keep_start,
-             "keep_end": keep_end, "hard_cutoff": hard_cutoff},
+            text(f"DELETE FROM {table} WHERE account_id = :acct AND data_misura < :cutoff"),
+            {"acct": account_id, "cutoff": cutoff},
         )
         deleted[table] = result.rowcount
 
@@ -100,51 +66,57 @@ async def delete_stale_data(
     result = await session.execute(
         text("""
             DELETE FROM measurements_totalizer
-            WHERE account_id = :acct AND (
-                (data_misura < :keep_start
-                 OR (data_misura >= :keep_end AND data_misura < :hard_cutoff))
-                OR (data_misura IS NULL AND mese_anno IS NOT NULL AND (
-                    to_date(mese_anno, 'MM/YYYY') < :keep_start
-                    OR (to_date(mese_anno, 'MM/YYYY') >= :keep_end
-                        AND to_date(mese_anno, 'MM/YYYY') < :hard_cutoff)))
-            )
+            WHERE account_id = :acct
+              AND (
+                data_misura < :cutoff
+                OR (data_misura IS NULL
+                    AND mese_anno IS NOT NULL
+                    AND to_date(mese_anno, 'MM/YYYY') < :cutoff)
+              )
         """),
-        {"acct": account_id, "keep_start": keep_start,
-         "keep_end": keep_end, "hard_cutoff": hard_cutoff},
+        {"acct": account_id, "cutoff": cutoff},
     )
     deleted["measurements_totalizer"] = result.rowcount
 
-    # Corrections audit log
+    # Corrections audit log — data_misura nullable; mese_anno fallback
     result = await session.execute(
         text("""
             DELETE FROM corrections
             WHERE account_id = :acct
-              AND (data_misura < :keep_start
-                   OR (data_misura >= :keep_end AND data_misura < :hard_cutoff))
+              AND (
+                data_misura < :cutoff
+                OR (data_misura IS NULL
+                    AND mese_anno IS NOT NULL
+                    AND to_date(mese_anno, 'MM/YYYY') < :cutoff)
+              )
         """),
-        {"acct": account_id, "keep_start": keep_start,
-         "keep_end": keep_end, "hard_cutoff": hard_cutoff},
+        {"acct": account_id, "cutoff": cutoff},
     )
     deleted["corrections"] = result.rowcount
 
     # Forecast periods — keyed by forecast_date
     result = await session.execute(
-        text("""
-            DELETE FROM forecast_periods
-            WHERE account_id = :acct
-              AND (forecast_date < :keep_start
-                   OR (forecast_date >= :keep_end AND forecast_date < :hard_cutoff))
-        """),
-        {"acct": account_id, "keep_start": keep_start,
-         "keep_end": keep_end, "hard_cutoff": hard_cutoff},
+        text("DELETE FROM forecast_periods WHERE account_id = :acct AND forecast_date < :cutoff"),
+        {"acct": account_id, "cutoff": cutoff},
     )
     deleted["forecast_periods"] = result.rowcount
 
+    total = sum(deleted.values())
     log.info(
-        "Retention %s policy=(%s, [%s,%s)): %s",
-        account_id, hard_cutoff, keep_start, keep_end,
+        "Retention %s cutoff=%s deleted=%d rows: %s",
+        account_id, cutoff, total,
         {k: v for k, v in deleted.items() if v > 0},
     )
+
+    # VACUUM ANALYZE on tables that had deletions — marks dead tuples reusable,
+    # updates planner statistics. No lock; runs outside the transaction.
+    if total > 0:
+        await session.commit()
+        for table in ("measurements", "measurements_secondary",
+                      "measurements_totalizer", "corrections", "forecast_periods"):
+            if deleted.get(table, 0) > 0:
+                await session.execute(text(f"VACUUM (ANALYZE) {table}"))
+
     return deleted
 
 
@@ -168,34 +140,39 @@ async def log_retention(
     )
 
 
-async def run_monthly_retention() -> dict[str, dict[str, int]]:
-    """Run the retention purge for all active accounts.
-
-    Called by the monthly scheduler job and the admin /retention/run endpoint.
-    Returns {account_id: rows_deleted_dict}.
-    """
+async def run_retention_for_account(account_id: str, schema_name: str) -> dict[str, int]:
+    """Run retention purge for a single account. Called by scheduler and admin endpoint."""
     from backend.db.session import get_public_session, get_session  # local import avoids circulars
 
-    policy = retention_policy()
-    hard_cutoff, keep_start, _ = policy
-    log.info("Monthly retention: hard_cutoff=%s  keep_start=%s", hard_cutoff, keep_start)
+    cutoff = retention_cutoff()
+    log.info("Retention %s: cutoff=%s", account_id, cutoff)
+
+    try:
+        async with get_session(schema_name) as session:
+            deleted = await delete_stale_data(session, account_id, cutoff=cutoff)
+        async with get_public_session() as pub:
+            await log_retention(pub, account_id, cutoff, deleted)
+        return deleted
+    except Exception as exc:
+        log.error("Retention failed for %s: %s", account_id, exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+async def run_monthly_retention() -> dict[str, dict[str, int]]:
+    """Run retention for all active accounts. Called by admin /retention/run endpoint."""
+    from backend.db.session import get_public_session
+
+    cutoff = retention_cutoff()
+    log.info("Full retention run: cutoff=%s", cutoff)
 
     async with get_public_session() as pub:
         accounts = (await pub.execute(
-            text("SELECT account_id, schema_name FROM public.accounts WHERE active = true")
+            text("SELECT account_id, schema_name FROM public.accounts WHERE active = true ORDER BY schema_name")
         )).fetchall()
 
     results: dict[str, dict[str, int]] = {}
     for account_id, schema_name in accounts:
-        try:
-            async with get_session(schema_name) as session:
-                deleted = await delete_stale_data(session, account_id, policy=policy)
-            async with get_public_session() as pub:
-                await log_retention(pub, account_id, keep_start, deleted)
-            results[account_id] = deleted
-        except Exception as exc:
-            log.error("Retention failed for %s: %s", account_id, exc, exc_info=True)
-            results[account_id] = {"error": str(exc)}
+        results[account_id] = await run_retention_for_account(account_id, schema_name)
 
-    log.info("Monthly retention complete: %d accounts processed", len(results))
+    log.info("Full retention complete: %d accounts processed", len(results))
     return results
