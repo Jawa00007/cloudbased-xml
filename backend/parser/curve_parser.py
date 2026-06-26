@@ -74,17 +74,24 @@ def _parse_date(day_number: str, mese_anno: str) -> date:
     return date(int(year_str), int(month_str), int(day_number.strip()))
 
 
-def _validate_periods(ea_element: ET.Element, dst: int) -> None:
+def _validate_periods(ea_element: ET.Element, dst: int, pod: str = "", day_str: str = "", source_file: str = "") -> None:
     """
-    Validate period count. Only enforced for Dst=0 days.
-    Raises ValueError if Dst=0 and period count != 96.
+    Validate period count for Dst=0 days.
+    - count > 96: hard error (corrupt data — more periods than possible)
+    - count < 96: warning only (switching/voltura days legitimately have partial periods)
+    - count == 0: handled upstream (warning + skip)
     """
     if dst != 0:
         return
     count = sum(1 for k in ea_element.attrib if k.startswith("E") and k[1:].isdigit())
-    if count != 96:
+    if count > 96:
         raise ValueError(
-            f"Expected 96 Ea periods for Dst=0 day, found {count}"
+            f"Expected ≤96 Ea periods for Dst=0 day, found {count}"
+        )
+    if count < 96 and count > 0:
+        log.warning(
+            "Partial day POD %s day %s in %s: %d/96 periods (switching/voltura day — storing as-is)",
+            pod, day_str, source_file, count,
         )
 
 
@@ -186,7 +193,7 @@ def extract_curve_records(
             continue
 
         try:
-            _validate_periods(ea_el, dst)
+            _validate_periods(ea_el, dst, pod=pod, day_str=day_str, source_file=source_file)
             data_misura = _parse_date(day_str, mese_anno)
         except ValueError as exc:
             raise ValueError(
