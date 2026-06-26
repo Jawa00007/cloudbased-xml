@@ -26,9 +26,12 @@ Real XML structure (confirmed from BAT/PDO2G files):
 
 from __future__ import annotations
 
+import logging
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -176,6 +179,10 @@ def extract_curve_records(
         # means "no measurement available for this POD/day" and is not an error.
         period_count = sum(1 for k in ea_el.attrib if k.startswith("E") and k[1:].isdigit())
         if period_count == 0:
+            log.warning(
+                "Skipping POD %s day %s in %s: <Ea> has no E1–E96 attributes",
+                pod, day_str, source_file,
+            )
             continue
 
         try:
