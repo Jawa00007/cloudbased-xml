@@ -675,7 +675,7 @@ async def export_compare_dp(
 
 @router.get(
     "/export/pods",
-    summary="Download forecast as Excel in per-POD wide format (one row per POD+date, 96 period columns)",
+    summary="Download forecast as CSV — one wide row per POD+date, 96 period columns (ea_mwh)",
 )
 async def export_forecast_pods(
     account_id: str,
@@ -683,79 +683,77 @@ async def export_forecast_pods(
     auth: _Auth,
 ) -> StreamingResponse:
     """
-    Downloads forecast_periods as Excel wide format:
-    POD | Filename | DAY | 1 | 2 | … | 96
+    Streams forecast_periods as CSV wide format:
+    POD, Source, DAY, 1, 2, … 96
     One row per (POD, date). Values are ea_mwh (MWh).
-    Filename column contains the source XML file name when available.
+    Streams directly from DB — no Excel buffering — so large accounts never time out.
     """
     check_account_access(account_id, auth)
     schema = schema_for(account_id)
-    t0 = time.monotonic()
 
-    wb = openpyxl.Workbook(write_only=True)
-    ws = wb.create_sheet("Forecast PODs")
-    ws.append(["POD", "Source", "DAY"] + [str(p) for p in range(1, 97)])
-
-    cur_key: tuple | None = None
-    cur: dict = {}
-    row_count = 0
-    found_any = False
-
-    async with get_session(schema) as session:
-        stream = await session.stream(
-            text("""
-                SELECT
-                    fp.pod,
-                    fp.forecast_date,
-                    fp.periodo,
-                    ROUND(fp.ea_kwh / 1000.0, 6) AS ea_mwh,
-                    fp.source_type
-                FROM forecast_periods fp
-                WHERE fp.account_id = :acct AND fp.mese_anno = :ma
-                ORDER BY fp.pod, fp.forecast_date, fp.periodo
-            """),
-            {"acct": account_id, "ma": mese_anno},
-        )
-        async for row in stream:
-            found_any = True
-            key = (row.pod, row.forecast_date)
-            if key != cur_key:
-                if cur_key is not None:
-                    day = cur_key[1].day
-                    ws.append(
-                        [cur_key[0], cur.get("src", ""), day]
-                        + [cur.get(p) for p in range(1, 97)]
-                    )
-                    row_count += 1
-                cur_key = key
-                cur = {"src": row.source_type or ""}
-            if row.ea_mwh is not None:
-                cur[row.periodo] = float(row.ea_mwh)
-
-        if cur_key is not None:
-            day = cur_key[1].day
-            ws.append(
-                [cur_key[0], cur.get("src", ""), day]
-                + [cur.get(p) for p in range(1, 97)]
-            )
-            row_count += 1
-
-    if not found_any:
+    # Existence check before starting the stream so we can still return a clean 404
+    async with get_session(schema) as chk:
+        exists = (await chk.execute(
+            text("SELECT 1 FROM forecast_periods WHERE account_id=:a AND mese_anno=:m LIMIT 1"),
+            {"a": account_id, "m": mese_anno},
+        )).fetchone()
+    if not exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No forecast data for {account_id} / {mese_anno}. Run POST /forecast/generate first.",
         )
 
-    logger.info("export/pods: %.1fs, %d rows", time.monotonic() - t0, row_count)
+    async def _generate():
+        yield ("POD,Source,DAY," + ",".join(str(p) for p in range(1, 97)) + "\r\n").encode()
+        t0 = time.monotonic()
+        row_count = 0
+        async with get_session(schema) as session:
+            stream = await session.stream(
+                text("""
+                    SELECT
+                        fp.pod,
+                        fp.forecast_date,
+                        fp.periodo,
+                        ROUND(fp.ea_kwh / 1000.0, 6) AS ea_mwh,
+                        fp.source_type
+                    FROM forecast_periods fp
+                    WHERE fp.account_id = :acct AND fp.mese_anno = :ma
+                    ORDER BY fp.pod, fp.forecast_date, fp.periodo
+                """),
+                {"acct": account_id, "ma": mese_anno},
+            )
+            cur_key: tuple | None = None
+            cur: dict = {}
+            async for row in stream:
+                key = (row.pod, row.forecast_date)
+                if key != cur_key:
+                    if cur_key is not None:
+                        day = cur_key[1].day
+                        vals = ",".join(
+                            "" if cur.get(p) is None else str(cur[p])
+                            for p in range(1, 97)
+                        )
+                        yield f"{cur_key[0]},{cur.get('src', '')},{day},{vals}\r\n".encode()
+                        row_count += 1
+                    cur_key = key
+                    cur = {"src": row.source_type or ""}
+                if row.ea_mwh is not None:
+                    cur[row.periodo] = float(row.ea_mwh)
+            if cur_key is not None:
+                day = cur_key[1].day
+                vals = ",".join(
+                    "" if cur.get(p) is None else str(cur[p])
+                    for p in range(1, 97)
+                )
+                yield f"{cur_key[0]},{cur.get('src', '')},{day},{vals}\r\n".encode()
+                row_count += 1
+        logger.info("export/pods (csv): %.1fs, %d rows", time.monotonic() - t0, row_count)
 
-    buf = io.BytesIO()
-    wb.save(buf)
     safe_month = mese_anno.replace("/", "-")
-    filename = f"forecast_pods_{account_id.lower()}_{safe_month}.xlsx"
-
+    filename = f"forecast_pods_{account_id.lower()}_{safe_month}.csv"
     return StreamingResponse(
-        io.BytesIO(buf.getvalue()),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _generate(),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
