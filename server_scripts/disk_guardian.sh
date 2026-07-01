@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # disk_guardian.sh — Monitor disk space and auto-clean before it fills up.
-# Runs every 15 minutes via systemd timer.
+# Runs every 15 minutes via cron (installed at /opt/sii/disk_monitor.sh).
 #
-# Thresholds:
+# Watches TWO filesystems:
+#   /                        — root disk (Docker images, logs, XML staging)
+#   /mnt/volume_fra1_quanta  — PostgreSQL data volume (the DB lives here!)
+#
+# DB volume thresholds (2026-07-01 outage: volume hit 100%, PG crash-looped):
+#   >= 85%: WARNING logged
+#   >= 92%: CRITICAL — touch /opt/sii/data/.disk_critical sentinel (sync_sii.sh
+#           refuses to start new ingests while it exists), stop backfill
+#   <  92%: sentinel removed automatically
+#
+# Root disk thresholds:
 #   > 80%: prune Docker build cache + journal
 #   > 88%: also remove old backfill logs (keep last 3)
 #   > 93%: aggressive prune + alert via API log WARNING
@@ -10,14 +20,36 @@
 set -uo pipefail
 
 LOGFILE=/opt/sii/logs/disk_monitor.log
+DB_VOLUME=/mnt/volume_fra1_quanta
+SENTINEL=/opt/sii/data/.disk_critical
 mkdir -p /opt/sii/logs
 
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOGFILE"; }
 
 used_pct() { df / | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
+vol_pct() { df "$DB_VOLUME" | awk 'NR==2 {gsub(/%/,"",$5); print $5}'; }
 
+# ── DB volume check (most critical — PG crashes if this fills) ────────────────
+if mountpoint -q "$DB_VOLUME"; then
+    VPCT=$(vol_pct)
+    if [ "$VPCT" -ge 92 ]; then
+        log "CRITICAL: DB volume at ${VPCT}% — blocking syncs, stopping backfill"
+        touch "$SENTINEL"
+        docker stop sii-backfill 2>/dev/null && log "sii-backfill stopped" || true
+    elif [ "$VPCT" -ge 85 ]; then
+        log "WARNING: DB volume at ${VPCT}% — approaching capacity, plan cleanup/expansion"
+        [ -f "$SENTINEL" ] && rm -f "$SENTINEL" && log "sentinel cleared (below critical)"
+    else
+        [ -f "$SENTINEL" ] && rm -f "$SENTINEL" && log "sentinel cleared (DB volume ${VPCT}%)"
+    fi
+else
+    log "CRITICAL: DB volume $DB_VOLUME is NOT MOUNTED"
+    touch "$SENTINEL"
+fi
+
+# ── Root disk check ────────────────────────────────────────────────────────────
 PCT=$(used_pct)
-log "Disk: ${PCT}% used"
+log "Disk: root=${PCT}% volume=${VPCT:-n/a}%"
 
 if [ "$PCT" -lt 80 ]; then
     exit 0

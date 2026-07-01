@@ -13,6 +13,9 @@ LOCAL_DATA="/opt/sii/data"
 LOGFILE="/var/log/sii-sync.log"
 BATCH_SIZE=${BATCH_SIZE_OVERRIDE:-10000}
 MIN_FREE_GB=3
+DB_VOLUME="/mnt/volume_fra1_quanta"
+MIN_VOLUME_FREE_GB=30
+SENTINEL="$LOCAL_DATA/.disk_critical"
 
 # Fetch active accounts from public.accounts table (includes any newly-added accounts)
 # Falls back to hardcoded list if DB is unavailable
@@ -23,6 +26,7 @@ ACCOUNTS=${_DB_ACCOUNTS:-"BAT CH4 DINAMO EGOGREEN ENERGETICA ENERGIT ENJOY ONDA 
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 free_gb() { df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}'; }
+volume_free_gb() { df -BG "$DB_VOLUME" 2>/dev/null | awk 'NR==2 {gsub("G","",$4); print $4}'; }
 
 schema_for() {
     case $1 in
@@ -64,7 +68,23 @@ if [ "$FREE" -lt "$MIN_FREE_GB" ]; then
     exit 1
 fi
 
-log "=== SII sync started | ${FREE}GB free ==="
+# DB volume guard — ingesting fills the PostgreSQL volume, not the root disk.
+# 2026-07-01 outage: volume hit 100% and PG crash-looped; root disk was fine.
+if [ -f "$SENTINEL" ]; then
+    log "ABORT: disk-critical sentinel present ($SENTINEL) — DB volume too full for ingestion"
+    exit 1
+fi
+VFREE=$(volume_free_gb)
+if [ -z "$VFREE" ]; then
+    log "ABORT: cannot read DB volume free space ($DB_VOLUME not mounted?)"
+    exit 1
+fi
+if [ "$VFREE" -lt "$MIN_VOLUME_FREE_GB" ]; then
+    log "ABORT: DB volume ${VFREE}GB free < ${MIN_VOLUME_FREE_GB}GB minimum — clean up or expand volume"
+    exit 1
+fi
+
+log "=== SII sync started | root ${FREE}GB free | DB volume ${VFREE}GB free ==="
 TMPDIR_WORK=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
