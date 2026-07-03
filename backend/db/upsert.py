@@ -450,13 +450,20 @@ async def drop_forecast_unique_idx(session: AsyncSession) -> None:
     """))
 
 
+_IDX_BUILD_TUNING = (
+    # Transaction-local (SET LOCAL reverts at commit; pooled connection unaffected):
+    # 512MB sort memory + parallel workers make the 10M-row btree build ~3x faster
+    # than the 64MB / 2-worker defaults.
+    "SET LOCAL maintenance_work_mem = '512MB'",
+    "SET LOCAL max_parallel_maintenance_workers = 4",
+)
+
+
 async def create_forecast_unique_idx(session: AsyncSession) -> None:
-    """Recreate the indexes on forecast_periods after a bulk insert.
-    Schema-qualified so they always land in the current account schema.
-    maintenance_work_mem is raised for this transaction only (SET LOCAL reverts at
-    commit, so the pooled connection is not affected) — the bulk build of the
-    unique index over ~10M rows drops from ~109s to ~40s vs the 64MB default."""
-    await session.execute(text("SET LOCAL maintenance_work_mem = '512MB'"))
+    """Recreate the unique index on forecast_periods after a bulk insert.
+    Schema-qualified so it always lands in the current account schema."""
+    for stmt in _IDX_BUILD_TUNING:
+        await session.execute(text(stmt))
     await session.execute(text("""
         DO $$ BEGIN
             EXECUTE format(
@@ -464,6 +471,19 @@ async def create_forecast_unique_idx(session: AsyncSession) -> None:
                 'ON %I.forecast_periods (account_id, pod, forecast_date, periodo)',
                 current_schema()
             );
+        EXCEPTION WHEN OTHERS THEN NULL; END $$
+    """))
+
+
+async def create_forecast_month_idx(session: AsyncSession) -> None:
+    """Recreate the (account_id, mese_anno) index on forecast_periods.
+    Split from create_forecast_unique_idx so both indexes can be built
+    concurrently on separate connections (btree builds take ShareLock,
+    which is self-compatible)."""
+    for stmt in _IDX_BUILD_TUNING:
+        await session.execute(text(stmt))
+    await session.execute(text("""
+        DO $$ BEGIN
             EXECUTE format(
                 'CREATE INDEX IF NOT EXISTS ix_forecast_periods_acct_month '
                 'ON %I.forecast_periods (account_id, mese_anno)',

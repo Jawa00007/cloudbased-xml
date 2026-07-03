@@ -44,7 +44,7 @@ from backend.core.config import settings
 from backend.db.session import get_session
 from backend.db.upsert import (
     upsert_forecast_periods,
-    drop_forecast_unique_idx, create_forecast_unique_idx,
+    drop_forecast_unique_idx, create_forecast_unique_idx, create_forecast_month_idx,
 )
 from backend.forecast.engine import (
     compare_dispatching_points,
@@ -343,6 +343,20 @@ def _make_compare_dp_excel(data: dict) -> bytes:
 
 # ── Routes — fixed paths first (before catch-all) ───────────────────────────
 
+async def _rebuild_forecast_indexes(schema: str) -> None:
+    """Rebuild both forecast_periods indexes concurrently on separate connections.
+    Btree builds take ShareLock (self-compatible), so the small (account_id,
+    mese_anno) index builds for free in the shadow of the big unique index."""
+    async def _build(builder) -> None:
+        async with get_session(schema) as s:
+            await builder(s)
+
+    await asyncio.gather(
+        _build(create_forecast_unique_idx),
+        _build(create_forecast_month_idx),
+    )
+
+
 async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_month: str) -> None:
     schema = schema_for(account_id)
     t0 = time.monotonic()
@@ -448,8 +462,7 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
 
             if not got_any:
                 await write_conn.rollback()
-                async with get_session(schema) as ddl_session:
-                    await create_forecast_unique_idx(ddl_session)
+                await _rebuild_forecast_indexes(schema)
                 _jobs[job_id] = {
                     "status": "error",
                     "result": None,
@@ -463,9 +476,8 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
             await write_conn.commit()
 
         t3 = time.monotonic()
-        async with get_session(schema) as ddl_session:
-            await create_forecast_unique_idx(ddl_session)
-        logger.info("Forecast %s: unique constraint recreated (%.2fs)", account_id, time.monotonic() - t3)
+        await _rebuild_forecast_indexes(schema)
+        logger.info("Forecast %s: indexes recreated (%.2fs)", account_id, time.monotonic() - t3)
 
         logger.info("TIMING total job: %.1fs", time.monotonic() - t0)
         _jobs[job_id] = {
@@ -481,10 +493,9 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
     except Exception as exc:
         logger.exception("Forecast job %s failed", job_id)
         try:
-            async with get_session(schema) as ddl_session:
-                await create_forecast_unique_idx(ddl_session)
+            await _rebuild_forecast_indexes(schema)
         except Exception:
-            logger.exception("Failed to recreate forecast unique index for %s after error", schema)
+            logger.exception("Failed to recreate forecast indexes for %s after error", schema)
         _jobs[job_id] = {"status": "error", "result": None, "error": str(exc)}
 
 
