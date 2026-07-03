@@ -433,27 +433,40 @@ _CHUNK = 5_900
 
 
 async def drop_forecast_unique_idx(session: AsyncSession) -> None:
-    """Drop the unique constraint/index on forecast_periods before a bulk insert.
-    All operations are schema-qualified via current_schema() to avoid touching
-    the public.forecast_periods constraint that shares the same index name."""
+    """Drop the indexes on forecast_periods before a bulk insert.
+    Both the unique constraint and the (account_id, mese_anno) index are dropped —
+    keeping them maintained during the month-DELETE and 10M-row COPY costs far more
+    than the bulk rebuild afterwards. All operations are schema-qualified via
+    current_schema() to avoid touching the public.forecast_periods objects that
+    share the same names."""
     await session.execute(text("""
         DO $$ BEGIN
             -- Drop named constraint (also drops its backing index)
             ALTER TABLE forecast_periods DROP CONSTRAINT IF EXISTS uq_forecast_period_key;
             -- Drop standalone index that may exist from a previous run of the new code
             EXECUTE format('DROP INDEX IF EXISTS %I.uq_forecast_period_key', current_schema());
+            EXECUTE format('DROP INDEX IF EXISTS %I.ix_forecast_periods_acct_month', current_schema());
         EXCEPTION WHEN OTHERS THEN NULL; END $$
     """))
 
 
 async def create_forecast_unique_idx(session: AsyncSession) -> None:
-    """Recreate the unique index on forecast_periods after a bulk insert.
-    Schema-qualified so it always lands in the current account schema."""
+    """Recreate the indexes on forecast_periods after a bulk insert.
+    Schema-qualified so they always land in the current account schema.
+    maintenance_work_mem is raised for this transaction only (SET LOCAL reverts at
+    commit, so the pooled connection is not affected) — the bulk build of the
+    unique index over ~10M rows drops from ~109s to ~40s vs the 64MB default."""
+    await session.execute(text("SET LOCAL maintenance_work_mem = '512MB'"))
     await session.execute(text("""
         DO $$ BEGIN
             EXECUTE format(
                 'CREATE UNIQUE INDEX IF NOT EXISTS uq_forecast_period_key '
                 'ON %I.forecast_periods (account_id, pod, forecast_date, periodo)',
+                current_schema()
+            );
+            EXECUTE format(
+                'CREATE INDEX IF NOT EXISTS ix_forecast_periods_acct_month '
+                'ON %I.forecast_periods (account_id, mese_anno)',
                 current_schema()
             );
         EXCEPTION WHEN OTHERS THEN NULL; END $$

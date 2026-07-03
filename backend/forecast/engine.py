@@ -288,13 +288,13 @@ async def generate_forecast_streaming(
     account_id: str,
     forecast_mese_anno: str,
     anagrafica_mese_anno: str | None = None,
-    pods_per_chunk: int = 50,
+    pods_per_chunk: int = 100,
 ):
     """
     Async-generator — yields list[ForecastRow] in chunks of `pods_per_chunk` PODs.
 
     Both the DB data loading AND the output are chunked so peak RAM is bounded
-    to ~50 pods at a time regardless of account size (CH4 has 3,449 PODs).
+    to ~pods_per_chunk pods at a time regardless of account size (CH4 has 3,449 PODs).
     The big cost was _load_source_daily_batch which fetched ALL pods' measurements
     at once (~500 MB for CH4); now it only fetches 50 pods per iteration.
     """

@@ -385,32 +385,63 @@ async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_mo
             )
 
             async with get_session(schema) as read_session:
-                _last_yield = time.monotonic()
-                async for chunk in generate_forecast_streaming(
-                    read_session, account_id, mese_anno, ana_month
-                ):
-                    got_any = True
-                    _t_recv = time.monotonic()
+                # Producer/consumer overlap: the engine builds the next chunk
+                # (read connection) while the previous one is being COPYed
+                # (write connection). maxsize=1 bounds in-flight chunks to 3
+                # (building + queued + copying) ≈ 450 MB at 100 PODs/chunk.
+                _queue: asyncio.Queue = asyncio.Queue(maxsize=1)
 
-                    async with write_conn.cursor() as _cur:
-                        async with _cur.copy(copy_sql) as copy:
-                            for r in chunk:
-                                await copy.write_row((
-                                    account_id, r.pod, r.mese_anno, r.punto_dispacciamento,
-                                    r.forecast_date, r.source_date, r.periodo,
-                                    r.ea_kwh, r.ea_kwh_with_loss, r.loss_pct, r.source_type,
-                                ))
+                async def _producer() -> None:
+                    # Completion is signalled through the queue itself (None = done,
+                    # Exception = engine failure) so the consumer can never be left
+                    # waiting on a dead producer.
+                    try:
+                        async for _chunk in generate_forecast_streaming(
+                            read_session, account_id, mese_anno, ana_month
+                        ):
+                            await _queue.put(_chunk)
+                        await _queue.put(None)
+                    except Exception as _exc:  # noqa: BLE001 — forwarded to consumer
+                        await _queue.put(_exc)
 
-                    _rows = len(chunk)
-                    n += _rows
-                    logger.info(
-                        "Forecast %s: gen=%.2fs copy=%.2fs rows=%d",
-                        account_id,
-                        _t_recv - _last_yield,
-                        time.monotonic() - _t_recv,
-                        _rows,
-                    )
-                    _last_yield = time.monotonic()
+                _prod_task = asyncio.create_task(_producer())
+                try:
+                    while True:
+                        _t_wait = time.monotonic()
+                        chunk = await _queue.get()
+                        if chunk is None:
+                            break
+                        if isinstance(chunk, Exception):
+                            raise chunk
+                        got_any = True
+                        _t_recv = time.monotonic()
+
+                        async with write_conn.cursor() as _cur:
+                            async with _cur.copy(copy_sql) as copy:
+                                for r in chunk:
+                                    await copy.write_row((
+                                        account_id, r.pod, r.mese_anno, r.punto_dispacciamento,
+                                        r.forecast_date, r.source_date, r.periodo,
+                                        r.ea_kwh, r.ea_kwh_with_loss, r.loss_pct, r.source_type,
+                                    ))
+
+                        _rows = len(chunk)
+                        n += _rows
+                        logger.info(
+                            "Forecast %s: wait=%.2fs copy=%.2fs rows=%d",
+                            account_id,
+                            _t_recv - _t_wait,
+                            time.monotonic() - _t_recv,
+                            _rows,
+                        )
+                    await _prod_task
+                finally:
+                    if not _prod_task.done():
+                        _prod_task.cancel()
+                        try:
+                            await _prod_task
+                        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                            pass
 
             t2 = time.monotonic()
             logger.info("TIMING generate+copy: %.1fs, rows=%d", t2 - t1, n)
