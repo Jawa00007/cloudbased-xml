@@ -422,8 +422,8 @@ _COVERAGE_TTL = 60  # 1 minute — shorter during active backfill operations
 
 def _expected_months() -> list[str]:
     """MM/YYYY strings from retention keep_start through the current month."""
-    from backend.db.retention import retention_policy
-    _, keep_start, _ = retention_policy()
+    from backend.db.retention import retention_cutoff
+    keep_start = retention_cutoff()
     today = date.today()
     months: list[str] = []
     d = keep_start
