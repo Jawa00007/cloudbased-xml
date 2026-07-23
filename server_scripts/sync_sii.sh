@@ -96,7 +96,6 @@ if [ -f "$LOCKFILE" ]; then
     fi
 fi
 echo $$ > "$LOCKFILE"
-trap 'rm -f "$LOCKFILE"' EXIT
 
 # Skip if backfill is running (only applies to cron; backfill itself sets BATCH_SIZE_OVERRIDE)
 if [ -z "$BATCH_SIZE_OVERRIDE" ] && \
@@ -130,7 +129,7 @@ fi
 
 log "=== SII sync started | root ${FREE}GB free | DB volume ${VFREE}GB free ==="
 TMPDIR_WORK=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_WORK"' EXIT
+trap 'rm -f "$LOCKFILE"; rm -rf "$TMPDIR_WORK"' EXIT
 
 API_KEY=$(grep '^API_KEY=' /opt/sii/.env | cut -d= -f2- | tr -d '\r\n' 2>/dev/null)
 
