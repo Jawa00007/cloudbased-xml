@@ -1,8 +1,17 @@
 """
-APScheduler setup — nightly ingestion at 02:00 UTC and staggered daily retention.
+APScheduler setup — fallback nightly ingestion at 05:00 UTC and staggered daily retention.
 
 Scheduler is started on FastAPI startup and stopped on shutdown.
-The nightly job calls ingest_all() which processes all active accounts.
+
+The primary ingestion path is now `server_scripts/sync_sii.sh` (root crontab, 02:00
+UTC): it pulls new files from the Italian server per account, then chains a full
+all-accounts re-check (POST /api/sync) itself once every account's pull finishes —
+a real sequential dependency, not a scheduling guess. `nightly_ingest` here is a
+resilience fallback only: if the shell cron never runs (server rebooted at 02:00,
+cron misconfigured, etc.), this still guarantees one full ingest_all() pass every
+day. It fires at 05:00 UTC — after retention (03:30) and safely clear of the shell
+script's normal run window — so on a normal night it finds the ingestion guard
+already idle and just does a harmless no-op re-scan.
 
 Retention runs once per day from the 10th to the 21st of each month at 03:30 UTC,
 processing one account per day (alphabetical by schema_name).
@@ -28,23 +37,26 @@ scheduler = AsyncIOScheduler()
 
 
 async def _nightly_ingest() -> None:
+    """Fallback full ingest — see module docstring. Normally a no-op: the
+    02:00 UTC shell-triggered sync + its chained re-check has already run and
+    left the guard idle by the time this fires at 05:00 UTC."""
     if backfill_active():
-        logger.info("Nightly scheduler: skipping — historical backfill is still running")
+        logger.info("Fallback scheduler: skipping — historical backfill is still running")
         return
     if not guard.claim("scheduler"):
         logger.warning(
-            "Nightly scheduler: skipping — ingestion already running "
+            "Fallback scheduler: skipping — ingestion already running "
             "(triggered by %s, current account: %s)",
             guard.triggered_by, guard.current_account,
         )
         return
 
-    logger.info("Nightly scheduler: starting ingestion for all accounts")
+    logger.info("Fallback scheduler: starting ingestion for all accounts")
     try:
         await ingest_all(on_account=lambda acc: setattr(guard, "current_account", acc))
-        logger.info("Nightly scheduler: ingestion complete")
+        logger.info("Fallback scheduler: ingestion complete")
     except Exception as exc:
-        logger.error("Nightly scheduler error: %s", exc, exc_info=True)
+        logger.error("Fallback scheduler error: %s", exc, exc_info=True)
     finally:
         guard.release()
 
@@ -81,9 +93,9 @@ def start_scheduler() -> None:
     """Add the nightly job and start the scheduler. Called on FastAPI startup."""
     scheduler.add_job(
         _nightly_ingest,
-        trigger=CronTrigger(hour=2, minute=0),   # 02:00 UTC every day
+        trigger=CronTrigger(hour=5, minute=0),   # 05:00 UTC every day — fallback only, see module docstring
         id="nightly_ingest",
-        name="Nightly SII ingestion — all accounts",
+        name="Fallback SII ingestion — all accounts (05:00 UTC safety net)",
         replace_existing=True,
         misfire_grace_time=3600,
         max_instances=1,
@@ -98,7 +110,10 @@ def start_scheduler() -> None:
         max_instances=1,
     )
     scheduler.start()
-    logger.info("Scheduler started — ingestion at 02:00 UTC, retention 03:30 UTC (active 10th–21st)")
+    logger.info(
+        "Scheduler started — fallback ingestion 05:00 UTC (primary: cron sync_sii.sh "
+        "at 02:00 UTC), retention 03:30 UTC (active 10th–21st)"
+    )
 
 
 def stop_scheduler() -> None:

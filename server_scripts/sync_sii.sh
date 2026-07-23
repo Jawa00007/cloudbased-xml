@@ -1,9 +1,16 @@
 #!/bin/bash
-# SII Nightly Sync v2 — batch-pull new files from Italian server
-# Downloads only unprocessed ZIPs (max BATCH_SIZE per account per run),
-# ingests them (process-and-delete), never accumulates a full mirror.
+# SII Nightly Sync v3 — batch-pull new files from Italian server, then chain a
+# full re-check (all-accounts ingest_all) once the pull finishes. Downloads only
+# unprocessed ZIPs (max BATCH_SIZE per account per run), ingests them
+# (process-and-delete), never accumulates a full mirror.
 #
-# Cron: 30 */2 * * * /opt/sii/sync_sii.sh
+# Cron: 0 2 * * * /opt/sii/sync_sii.sh
+#
+# Sequence: pull+ingest each account (synchronous, existing behavior) -> once
+# every account's triggered ingestion has actually finished, trigger one
+# all-accounts POST /api/sync as a full re-check. This also retries any file
+# that errored during the per-account phase, since ingest_all()/ingest_account()
+# never delete status='error' files.
 
 ITALIAN_HOST="ubuntu@57.131.24.23"
 ITALIAN_BASE="/home/ubuntu/SII_CLOUD"
@@ -27,6 +34,43 @@ ACCOUNTS=${_DB_ACCOUNTS:-"BAT CH4 DINAMO EGOGREEN ENERGETICA ENERGIT ENJOY ONDA 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 free_gb() { df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}'; }
 volume_free_gb() { df -BG "$DB_VOLUME" 2>/dev/null | awk 'NR==2 {gsub("G","",$4); print $4}'; }
+
+# Poll /api/sync/status every 15s until the ingestion guard is idle (max $1
+# seconds, default 8h). Returns 1 on timeout so callers can log a warning
+# instead of hanging forever.
+_wait_idle() {
+    local max_wait=${1:-28800}
+    local waited=0
+    while [ "$waited" -lt "$max_wait" ]; do
+        sleep 15; waited=$((waited + 15))
+        local running
+        running=$(curl -sk -H "X-API-Key: $API_KEY" "https://localhost/api/sync/status" 2>/dev/null \
+            | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print('yes' if any(x.get('running') for x in d) else 'no')
+except Exception:
+    print('yes')
+" 2>/dev/null)
+        [ "$running" = "no" ] && return 0
+    done
+    return 1
+}
+
+# Files that errored during ingestion for a given account (post-run check).
+_account_error_count() {
+    curl -sk -H "X-API-Key: $API_KEY" "https://localhost/api/sync/status" 2>/dev/null \
+        | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    row = next((x for x in d if x.get('account_id') == '$1'), None)
+    print(int(row.get('files_error') or 0) if row else 0)
+except Exception:
+    print(0)
+" 2>/dev/null
+}
 
 schema_for() {
     case $1 in
@@ -88,7 +132,11 @@ log "=== SII sync started | root ${FREE}GB free | DB volume ${VFREE}GB free ==="
 TMPDIR_WORK=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_WORK"' EXIT
 
+API_KEY=$(grep '^API_KEY=' /opt/sii/.env | cut -d= -f2- | tr -d '\r\n' 2>/dev/null)
+
 TOTAL_NEW=0
+TOTAL_ERRORS=0
+ERROR_ACCOUNTS=""
 
 DATE_FROM=$(date -d "$(date +%Y-%m-01) -12 months" +%Y%m)
 DATE_TO=$(date +%Y%m)
@@ -159,25 +207,20 @@ for ACC in $ACCOUNTS; do
     fi
 
     log "$ACC: ingesting $RSYNC_COUNT files..."
-    _API_KEY=$(grep '^API_KEY=' /opt/sii/.env | cut -d= -f2- | tr -d '\r\n' 2>/dev/null)
     _HTTP=$(curl -sk -o /dev/null -w "%{http_code}" -X POST \
-        -H "X-API-Key: $_API_KEY" "https://localhost/api/sync/$ACC" 2>/dev/null)
+        -H "X-API-Key: $API_KEY" "https://localhost/api/sync/$ACC" 2>/dev/null)
     if [ "$_HTTP" = "200" ] || [ "$_HTTP" = "202" ]; then
-        # Poll every 15 s until this account is no longer running (max 8 h)
-        _W=0
-        while [ $_W -lt 28800 ]; do
-            sleep 15; _W=$((_W + 15))
-            _DONE=$(curl -sk -H "X-API-Key: $_API_KEY" \
-                "https://localhost/api/sync/status" 2>/dev/null \
-                | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print('no' if any(x.get('account_id')=='$ACC' and x.get('running') for x in d) else 'yes')
-except: print('yes')
-" 2>/dev/null)
-            [ "$_DONE" = "yes" ] && break
-        done
+        if ! _wait_idle 28800; then
+            log "$ACC: WARNING — still running after 8h wait, moving on without checking errors"
+        else
+            _ERR=$(_account_error_count "$ACC")
+            _ERR=${_ERR:-0}
+            if [ "$_ERR" -gt 0 ] 2>/dev/null; then
+                log "$ACC: WARNING — $_ERR file(s) failed ingestion (retried automatically by the full re-check below)"
+                ERROR_ACCOUNTS="$ERROR_ACCOUNTS $ACC($_ERR)"
+                TOTAL_ERRORS=$((TOTAL_ERRORS + _ERR))
+            fi
+        fi
     elif [ "$_HTTP" = "409" ]; then
         # API lock held by another sync — skip this account, retry next cron run
         log "$ACC: API busy (409) — another sync is running, skipping until next cron run"
@@ -190,4 +233,28 @@ except: print('yes')
     log "$ACC: done"
 done
 
-log "=== Sync complete | $TOTAL_NEW new files | $(free_gb)GB free ==="
+if [ -n "$ERROR_ACCOUNTS" ]; then
+    log "=== Sync complete | $TOTAL_NEW new files | $TOTAL_ERRORS error(s) —$ERROR_ACCOUNTS | $(free_gb)GB free ==="
+else
+    log "=== Sync complete | $TOTAL_NEW new files | 0 errors | $(free_gb)GB free ==="
+fi
+
+# Full re-check — only after every account's triggered ingestion has actually
+# finished (the per-account loop above is synchronous, so this always runs
+# strictly after the pull). Also retries anything that errored above, since
+# ingest_all()/ingest_account() never delete status='error' files.
+log "Triggering full re-check (all accounts) ..."
+_HTTP=$(curl -sk -o /dev/null -w "%{http_code}" -X POST -H "X-API-Key: $API_KEY" "https://localhost/api/sync" 2>/dev/null)
+if [ "$_HTTP" = "200" ] || [ "$_HTTP" = "202" ]; then
+    if _wait_idle 28800; then
+        log "Full re-check complete"
+    else
+        log "WARNING: full re-check still running after 8h wait — leaving it to finish in the background"
+    fi
+elif [ "$_HTTP" = "409" ]; then
+    log "WARNING: full re-check skipped — ingestion lock unexpectedly busy right after per-account sync finished"
+else
+    log "WARNING: full re-check failed to start (HTTP $_HTTP) — the 05:00 UTC scheduler fallback will still run today"
+fi
+
+log "=== Nightly sync + full re-check finished | $(free_gb)GB free ==="
