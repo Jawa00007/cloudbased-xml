@@ -105,6 +105,14 @@ _load_state()
 
 _ACCOUNT_TIMEOUT = 3600  # seconds — matches ingest_all's internal timeout
 
+# Ceiling for a full all-accounts ingest_all() pass (POST /sync with no account, and the
+# nightly full re-check chained by sync_sii.sh). Without this, a DB connection that dies
+# silently mid-account leaves the guard "running" forever, blocking every future sync
+# (per-account or full) until someone notices and restarts the API — the same failure
+# mode observed on the forecast path 2026-07-28. Generous headroom over 12 accounts x
+# the 1h per-account ceiling.
+_ALL_ACCOUNTS_TIMEOUT = 6 * 3600
+
 # DB-backed last-sync cache (30s TTL) so cron-triggered runs show up in the UI
 _db_last_sync: dict[str, datetime | None] = {}
 _db_file_counts: dict[str, tuple[int, int]] = {}   # account → (ok, error)
@@ -218,13 +226,19 @@ async def _run_ingest(account_id: str | None) -> None:
                 logger.error("Sync: account %s timed out after %ds", account_id, _ACCOUNT_TIMEOUT)
             guard.accounts_done = 1
         else:
-            await ingest_all(
-                on_account=_on_account,
-                on_account_done=_on_account_done,
-                on_scan_start=_on_scan_start,
-                on_files_found=_on_files_found,
-                on_file_done=_on_file_done,
-            )
+            try:
+                await asyncio.wait_for(
+                    ingest_all(
+                        on_account=_on_account,
+                        on_account_done=_on_account_done,
+                        on_scan_start=_on_scan_start,
+                        on_files_found=_on_files_found,
+                        on_file_done=_on_file_done,
+                    ),
+                    timeout=_ALL_ACCOUNTS_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Sync: all-accounts ingest timed out after %ds", _ALL_ACCOUNTS_TIMEOUT)
 
     except Exception as exc:
         logger.error("Sync error: %s", exc)

@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
+# Same ceiling as the API's all-accounts sync path (backend/api/routes/sync.py) — without
+# it, a DB connection dying silently mid-account leaves the guard "running" forever,
+# blocking every future sync until someone restarts the API manually.
+_ALL_ACCOUNTS_TIMEOUT = 6 * 3600
+
 
 async def _nightly_ingest() -> None:
     """Fallback full ingest — see module docstring. Normally a no-op: the
@@ -53,8 +58,13 @@ async def _nightly_ingest() -> None:
 
     logger.info("Fallback scheduler: starting ingestion for all accounts")
     try:
-        await ingest_all(on_account=lambda acc: setattr(guard, "current_account", acc))
+        await asyncio.wait_for(
+            ingest_all(on_account=lambda acc: setattr(guard, "current_account", acc)),
+            timeout=_ALL_ACCOUNTS_TIMEOUT,
+        )
         logger.info("Fallback scheduler: ingestion complete")
+    except asyncio.TimeoutError:
+        logger.error("Fallback scheduler: ingestion timed out after %ds", _ALL_ACCOUNTS_TIMEOUT)
     except Exception as exc:
         logger.error("Fallback scheduler error: %s", exc, exc_info=True)
     finally:

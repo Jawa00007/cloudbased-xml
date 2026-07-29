@@ -357,7 +357,48 @@ async def _rebuild_forecast_indexes(schema: str) -> None:
     )
 
 
+# Generous but finite ceiling on a single forecast job. Without this, a DB connection
+# that dies silently mid-write (observed 2026-07-28: EGOGREEN job hung at chunk 65/155
+# with no exception, no timeout, no container restart — just gone) leaves the job
+# "running" forever, permanently blocking that account's guard until someone notices
+# and manually restarts the API. Largest account so far (EGOGREEN, ~46M rows) has
+# comfortably finished well inside this window under normal load.
+_FORECAST_JOB_TIMEOUT = 90 * 60  # 90 minutes
+
+# Accounts with a forecast job currently in flight. Reserved synchronously (no await
+# between the check and the add) in run_generate_forecast, released exactly once in
+# _run_forecast_job's finally — regardless of whether the job finished, errored, or
+# timed out. This is the single source of truth for the "already running" guard;
+# _jobs is only consulted afterward to report which month was running.
+_forecast_running_accounts: set[str] = set()
+
+
 async def _run_forecast_job(job_id: str, account_id: str, mese_anno: str, ana_month: str) -> None:
+    """Timeout-bounded wrapper around the actual job. See _FORECAST_JOB_TIMEOUT."""
+    try:
+        await asyncio.wait_for(
+            _run_forecast_job_inner(job_id, account_id, mese_anno, ana_month),
+            timeout=_FORECAST_JOB_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Forecast job %s (%s / %s) timed out after %ds — marking as error, releasing guard",
+            job_id, account_id, mese_anno, _FORECAST_JOB_TIMEOUT,
+        )
+        try:
+            await _rebuild_forecast_indexes(schema_for(account_id))
+        except Exception:
+            logger.exception("Failed to recreate forecast indexes for %s after timeout", account_id)
+        _jobs[job_id] = {
+            "status": "error",
+            "result": None,
+            "error": f"Forecast generation timed out after {_FORECAST_JOB_TIMEOUT // 60} minutes — please retry",
+        }
+    finally:
+        _forecast_running_accounts.discard(account_id)
+
+
+async def _run_forecast_job_inner(job_id: str, account_id: str, mese_anno: str, ana_month: str) -> None:
     schema = schema_for(account_id)
     t0 = time.monotonic()
 
@@ -534,17 +575,20 @@ async def run_generate_forecast(
     check_account_access(body.account_id, auth)
     # Block any concurrent job for the same account — the bulk-insert path drops and
     # recreates the schema's unique index, so two simultaneous jobs would race on DDL.
-    already_running = [
-        j for j in _jobs.values()
-        if j.get("status") == "running"
-        and j.get("account_id") == body.account_id
-    ]
-    if already_running:
-        running_month = already_running[0].get("mese_anno", "?")
+    # _forecast_running_accounts is the source of truth (reserved here, released exactly
+    # once in _run_forecast_job's finally — including on timeout); _jobs is only read
+    # for the informative "which month" detail in the 409 response.
+    if body.account_id in _forecast_running_accounts:
+        running_month = next(
+            (j.get("mese_anno", "?") for j in _jobs.values()
+             if j.get("status") == "running" and j.get("account_id") == body.account_id),
+            "?",
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Forecast already running for {body.account_id} / {running_month}. Please wait.",
         )
+    _forecast_running_accounts.add(body.account_id)
     job_id = start_forecast_job(body.account_id, body.mese_anno, body.anagrafica_mese_anno)
     return {"job_id": job_id, "status": "running"}
 
