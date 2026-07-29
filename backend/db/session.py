@@ -57,10 +57,17 @@ engine = create_async_engine(
     _fix_db_url(settings.DATABASE_URL),
     echo=settings.LOG_LEVEL == "DEBUG",
     pool_pre_ping=True,
-    pool_size=10,       # steady-state connections kept open
-    max_overflow=20,    # extra connections allowed under burst load
-    pool_timeout=30,    # seconds to wait for a connection before raising
-    pool_recycle=1800,  # recycle connections every 30 min to clear stale state
+    # 2026-07-29: a streaming CSV export for a large account (EGOGREEN, 45M+ rows) holds
+    # one connection for the entire download duration (minutes). Under heavy concurrent
+    # load (regeneration + slow aggregate queries) the old 30-connection ceiling
+    # (10+20) queued new requests for up to pool_timeout, producing a silent connection
+    # (headers sent, no body) that browsers report as "Failed to fetch". Postgres itself
+    # has headroom (max_connections=100, ~29 typically in use), so raising the app's own
+    # ceiling is the fix, not a database change.
+    pool_size=20,        # was 10 — steady-state connections kept open
+    max_overflow=30,     # was 20 — extra connections allowed under burst load (ceiling 50)
+    pool_timeout=30,     # seconds to wait for a connection before raising
+    pool_recycle=1800,   # recycle connections every 30 min to clear stale state
 )
 
 _SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
