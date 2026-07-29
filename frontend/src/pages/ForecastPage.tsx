@@ -139,13 +139,18 @@ function GenerateTab() {
   const { data: forecast = [], isLoading: loadingForecast } = useQuery({
     queryKey: ['forecast', accountId, meseAnno, selectedPod],
     queryFn: () => fetchForecast(accountId, meseAnno, selectedPod ?? undefined),
-    enabled: !!accountId && !!meseAnno,
+    // Frozen while a job is running: forecast_periods is being deleted and bulk-rewritten
+    // during generation, so refetching here would both return meaningless mid-flux rows
+    // and pile expensive queries onto the exact table the job needs I/O for, slowing the
+    // job down. Cached data (from before generation started) stays visible; the explicit
+    // invalidateQueries() below fires the one fetch that matters right when it's ready.
+    enabled: !!accountId && !!meseAnno && jobStatus !== 'running',
   })
 
   const { data: summary } = useQuery({
     queryKey: ['forecast-summary', accountId, meseAnno],
     queryFn: () => fetchForecastSummary(accountId, meseAnno),
-    enabled: !!accountId && !!meseAnno && forecast.length > 0,
+    enabled: !!accountId && !!meseAnno && forecast.length > 0 && jobStatus !== 'running',
     staleTime: 30_000,
   })
 

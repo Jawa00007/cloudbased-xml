@@ -356,6 +356,14 @@ async def _rebuild_forecast_indexes(schema: str) -> None:
         _build(create_forecast_month_idx),
     )
 
+    # Without this, planner statistics stay stale (reflecting the pre-DELETE table)
+    # until autovacuum's own ANALYZE eventually fires — observed taking 4+ minutes
+    # to even start on EGOGREEN's table, competing for I/O with whatever queries
+    # resume immediately after generation (e.g. the frontend's summary refetch).
+    # Cheap relative to the job as a whole; keeps the very next query fast and correct.
+    async with get_session(schema) as s:
+        await s.execute(text("ANALYZE forecast_periods"))
+
 
 # Generous but finite ceiling on a single forecast job. Without this, a DB connection
 # that dies silently mid-write (observed 2026-07-28: EGOGREEN job hung at chunk 65/155
